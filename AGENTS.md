@@ -4,6 +4,8 @@ Permanent rules for coding agents working in this repository.
 
 The full blueprint is [`docs/NAVEEN-MASTER-ARCHITECTURE.md`](docs/NAVEEN-MASTER-ARCHITECTURE.md). If this file and application code disagree, **stop and ask**; do not silently invent a new architecture.
 
+**This phase is documentation and boundaries only.** Do not implement JARVIS Core, install AI runtimes, or change application source unless a later task explicitly says so.
+
 ## What this project is
 
 NAVEEN / JARVIS is a long-term **standalone personal AI assistant and second brain**.
@@ -14,26 +16,58 @@ Display names in [`src/config/assistantConfig.ts`](src/config/assistantConfig.ts
 - Visual core: NOVA
 - Wake name: JARVIS
 
-This repository currently contains a **desktop HUD shell** (React + Vite + Three.js) and a **thin Tauri 2 / Rust sidecar** (CPAL microphone RMS + sysinfo telemetry). JARVIS Core, intent/planning, memory, research, model routing, capability execution, and the security gateway are **not implemented yet**.
+This repository currently contains a **desktop HUD shell** (React + Vite + Three.js) and a **thin Tauri 2 / Rust sidecar** (CPAL microphone RMS + sysinfo telemetry). The Python AI Core, Capability Registry, Security Gateway, Device Gateway traits, and secure host↔core IPC **are not implemented yet**.
 
-## Non-negotiable split
+## Decision classes (read first)
+
+| Class | Meaning |
+| --- | --- |
+| **LOCKED** | Must not be violated. Change only by explicit architecture revision of this file and the master blueprint. |
+| **PROVISIONAL** | Current hybrid split (Rust host + Python AI Core + IPC). Preferred now; not a forever commitment. |
+| **OPEN** | Must not be hardcoded. Decide later behind interfaces. |
+
+## LOCKED split
 
 | Layer | Lives in | May do | Must not do |
 | --- | --- | --- | --- |
-| Presentation | `src/` React HUD + R3F | Display state, accept non-privileged input, subscribe to events | Orchestrate, infer, store secrets, own privileged OS work |
-| JARVIS Core | Future Rust crate hosted by Tauri | Orchestrate, plan, route models, call capabilities | Depend on React components |
-| Device Gateway | `src-tauri/` adapters | Hardware I/O behind traits | Leak OS-specific calls into Core or UI |
-| Security Gateway | Future native core + Tauri ACL | Authorize every privileged action | Be bypassed by UI `invoke` or MCP |
+| Presentation | `src/` React HUD + R3F | Display state, accept non-privileged input, subscribe to events | Orchestrate, infer, store secrets, own privileged OS work, talk to Python Core directly |
+| Privileged native | Rust / Tauri host | Device I/O, OS ops, security gateway, authn/authz, sandbox, secure IPC | Leak unrestricted OS access to Python or the webview |
+| Cognition | JARVIS AI Core (see provisional) | Orchestrate, plan, route models, memory, research, request capabilities | Execute privileged OS operations itself |
 
 **Cognition and privileged operations must not be implemented inside React UI components.**
 
-## Replaceability
+**Python AI Core must not receive unrestricted operating-system access.**
+
+Privileged path (locked):
+
+`AI Core → Capability Registry → Security / Permission Gateway → Rust Device Gateway → Device / OS`
+
+## PROVISIONAL hybrid (current architecture choice)
+
+```text
+React / Three.js     → presentation client only
+Rust / Tauri         → native host, Device Gateway, telemetry, OS ops, security
+Python AI Core       → orchestrator, intent, planning, models, memory, research, MCP
+```
+
+Communication (provisional):
+
+```text
+React  ↔  Rust host          (Tauri IPC; existing tauriBridge pattern)
+Rust host  ↔  Python AI Core (versioned, authenticated, least-privilege IPC)
+```
+
+The webview must never open a private channel to Python that bypasses the Rust host.
+
+Exact Python packaging, exact IPC protocol, and exact process layout remain **OPEN**.
+
+## Replaceability (LOCKED)
 
 All major subsystems must be replaceable via **interfaces, traits, adapters, providers, configuration, and registries**.
 
 Never hardcode:
 
-- LLM provider or model
+- LLM provider or model (not Gemma, Qwen, Llama, Ollama, or any model filename)
 - STT / TTS provider
 - database or memory implementation
 - tool / capability provider
@@ -44,30 +78,28 @@ Never hardcode:
 - capability permissions
 - cloud dependencies
 
-The system must survive swapping Gemma, Ollama, whisper.cpp, sherpa-onnx, Kokoro, SQLite/vector stores, laptop vs phone, or the HUD itself **without rewriting Core**.
-
 Name specific engines only as **replaceable candidates** in config and docs.
 
 ## Where code belongs today
 
-Keep existing modules in their roles. Do not “temporarily” put Core logic in the HUD.
+Keep existing modules in their roles. Do not put Core logic in the HUD. Do not give Python a backdoor to CPAL or the filesystem.
 
 **Presentation (keep)**
 
 - HUD: `src/components/hud/`
 - Nova Core visuals: `src/components/core/`
 - Theme: `src/config/theme.ts`, `src/config/themeManager.ts`
-- Visual/UX state: `src/state/assistantState.ts` (visual state only, not cognition)
+- Visual/UX state: `src/state/assistantState.ts` (visual state only)
 - HUD presentation model: `src/config/hudModel.ts`
-- Thin IPC client: `src/services/native/tauriBridge.ts`
+- Thin IPC client: `src/services/native/tauriBridge.ts` (React ↔ Rust only)
 
-**Native host (evolve as Device Gateway)**
+**Native host (evolve as Device Gateway + security boundary)**
 
 - Commands: `src-tauri/src/lib.rs` (`jarvis_ping`, `get_system_info`, mic start/stop/level)
 - Audio capture: `src-tauri/src/audio.rs` (CPAL)
 - IPC ACL (not the capability registry): `src-tauri/capabilities/default.json`
 
-**Voice contracts (keep as boundaries; do not fill with webview STT)**
+**Voice contracts (keep; do not fill with webview STT)**
 
 - `src/services/voiceTypes.ts`
 - `src/services/voice/voiceEngine.ts`
@@ -75,128 +107,111 @@ Keep existing modules in their roles. Do not “temporarily” put Core logic in
 - `src/services/voice/stt/sttProvider.ts` (factory only)
 - `src/services/voice/voiceController.ts` (not wired from `App.tsx` yet)
 
-Target Core location: **Rust workspace crate** (for example `crates/jarvis-core`), hosted by the Tauri binary. Do not place Core in `src/App.tsx`.
+Do not place JARVIS Core in `src/App.tsx`. Do not treat `jarvis_ping` as Core.
 
-## Voice rules
+## Voice rules (LOCKED pipeline; OPEN engines)
 
-Native pipeline only:
+Native audio stays **outside the webview**:
 
-`CPAL / Device Gateway → PCM → VAD → SttProvider → text event → JARVIS Core`
+`CPAL → PCM pipeline → VAD → SttProvider → text event → JARVIS Core`
 
 - Do **not** put audio buffers or STT inference in the webview.
 - Do **not** use browser `SpeechRecognition`.
 - Do **not** treat HUD RMS gating in `VoicePanel` as VAD.
-- The UI must **not** own microphone lifecycle long-term (`App.tsx` currently starts CPAL on mount; that is technical debt, not the target).
-- Prefer events (`audio://level`, `vad://state`, `stt://partial`, `stt://final`) over `setInterval` + `invoke` polling.
+- The UI must **not** own microphone lifecycle (`App.tsx` currently starts CPAL on mount; that is debt).
+- Prefer events over polling.
 
-Evaluate and wrap mature implementations behind `SttProvider`: **whisper.cpp**, **sherpa-onnx**, **Silero VAD**. Do not rebuild them.
+STT candidates (replaceable, not locked): **sherpa-onnx**, **whisper.cpp**. VAD candidate: **Silero**. TTS must use a **TtsProvider** abstraction. Exact engines remain **OPEN**.
 
-## Model rules
+Capture stays in the Rust Device Gateway. Whether VAD/STT run in the host or a constrained adapter is **OPEN**; Python must not get an always-on raw mic without the gateway.
 
-Conceptual chain: `ModelProvider → ModelRouter / ModelManager → task-appropriate provider/model`.
+## Model rules (LOCKED interface; OPEN implementations)
 
-Support local models, Ollama, llama.cpp, and future/optional cloud providers **behind the same traits**. No model is permanent.
+`ModelProvider → ModelRouter / ModelManager → task-appropriate provider`
 
-On the initial target (Windows, 8 GB RAM, no NVIDIA GPU): never assume VRAM; avoid loading heavy STT and LLM models at the same time; unload/switch via a Resource Manager.
+Must support replaceable providers such as: Ollama, llama.cpp, OpenAI-compatible APIs, future local/cloud. **No provider or model is permanent.**
 
-## Capability rules
+Do not hardcode Gemma, Qwen, Llama, Ollama, or any GGUF/ONNX filename in Core or UI.
 
-JARVIS tools are **registry-driven**, not hardcoded in UI.
+Resource Manager is required on the initial target (Windows, 8 GB RAM, no NVIDIA GPU).
 
-Each capability must declare: unique ID, input/output schema, required permissions, risk level, device requirements, execution adapter, verification strategy.
+## Memory rules (LOCKED interface; OPEN backend)
 
-Example domains: computer, files, browser, coding, research, vision, voice, GitHub, automation, device management.
+Memory is first-class, behind `MemoryStore`. Do not blindly persist every conversation.
+
+Candidates (not locked): SQLite/vector, Mem0, MemPalace, LanceDB, future systems.
+
+Do not confuse sysinfo RAM, HUD `MemoryPanel`, and semantic memory.
+
+## Capability rules (LOCKED)
+
+Registry-driven. Example domains: computer, filesystem, browser, coding, research, GitHub, voice, vision, automation, device management.
+
+Each capability: unique ID, input/output schema, required permissions, risk level, device requirements, execution adapter, verification strategy.
 
 **Tauri capabilities JSON is IPC ACL only.** It is not the JARVIS Capability Registry.
 
-MCP may be an interoperability protocol. **MCP must not bypass** JARVIS security, permissions, or audit.
+MCP may integrate tools. **MCP must not bypass** the permission gateway. MCP servers that touch the OS still go through Rust Device Gateway.
 
-## Security rules
+## Security rules (LOCKED)
 
-Defense in depth. Deny by default.
+Defense in depth:
 
-Include (as the system grows): authentication, authorization, least privilege, capability-level permissions, confirmation for dangerous operations, secrets isolation, audit logs, sandboxing, network policy, safe/offline mode, kill switch, rollback, suspicious-activity detection, prompt-injection defenses for external content, secure updates.
+Tauri ACL + Rust security gateway + authentication + authorization + least privilege + capability policies + sandbox + secret isolation + audit logging + network policy + safe/offline mode + kill switch + rollback.
 
-JARVIS must never:
+The AI must never:
 
-- bypass its own permission system
-- silently elevate privileges
-- disable authentication
-- reveal secrets
-- silently grant itself new capabilities
-- execute arbitrary untrusted code without policy approval
-- modify its security layer without controlled review
+- bypass authentication or authorization
+- grant itself privileges
+- disable security controls
+- expose secrets
+- silently execute arbitrary untrusted code
+- modify its own security controls without controlled review
 
-“User said so” is **not** enough for dangerous actions. High-risk actions need authentication and/or explicit confirmation.
+“User said so” is **not** enough for dangerous actions.
+
+Python Core talks to the host only through **versioned, authenticated, least-privilege IPC**. No unrestricted shell, FS, or network from Core by default.
 
 Secrets never live in the frontend, git, or logs.
 
-## Memory and research
+## Device rules (LOCKED abstraction)
 
-Memory is first-class and **native**. Do not blindly persist every conversation.
+Stable **Device Gateway** in the Rust host. Today: Windows laptop, sysinfo, CPAL. Future: GPU upgrade, phone, Raspberry Pi, other devices. Hardware-specific logic stays in adapters.
 
-Separate: working context, session, long-term, structured knowledge, project, learning, ideas, decisions, goals, preferences, documents.
+## Frontend rules (LOCKED)
 
-Do not confuse:
+UI may: display state/telemetry, take non-privileged input, subscribe to events.
 
-- sysinfo RAM (`get_system_info`)
-- HUD `MemoryPanel` (unused presentation)
-- semantic / second-brain memory (future Core)
+UI must not: orchestrate, execute privileged OS operations, contain model-provider logic, contain secrets, own the microphone lifecycle, bypass security, become the memory system, or spawn/talk to Python directly.
 
-Research is a **capability**: if the answer may be unknown or stale → research → verify sources → synthesize → optional memory → response. Never assume the LLM is current or correct.
-
-## Device rules
-
-Stable **Device Gateway**. Today: Windows laptop, sysinfo telemetry, CPAL mic. Future: phone, Raspberry Pi, other devices.
-
-OS- and hardware-specific code stays in adapters. Core talks to traits.
-
-## Frontend rules
-
-UI may: display state/telemetry, take non-privileged input, subscribe to core/device events.
-
-UI must not: orchestrate, execute privileged OS operations, contain model-provider logic, contain secrets, own the microphone lifecycle, bypass security, or become the memory system.
-
-`src/state/assistantState.ts` is **visual/UX state**. Keyboard 1–4 in `useAssistantKeyboard` is a HUD debug aid, not Core.
+`src/state/assistantState.ts` is **visual/UX state**. Keyboard 1–4 is a HUD debug aid, not Core.
 
 ## Events over polling
 
-Prefer events for telemetry, audio level, VAD, transcripts, core state, task progress, and security. Avoid unnecessary frontend polling (`App.tsx` currently polls sysinfo at 2s and mic level at 120ms).
+Prefer events for telemetry, audio level, VAD, transcripts, core state, task progress, security. Avoid unnecessary frontend polling.
 
 ## Reuse-first
 
-Before building a major subsystem:
+Before building a major subsystem: inspect repo → search mature OSS → license → maintenance → platform (Windows CPU, 8 GB) → resource use → adapter boundary → wrap → build from scratch only if necessary.
 
-1. Inspect this repository
-2. Search mature open-source implementations
-3. Check license
-4. Check maintenance/activity
-5. Check platform compatibility (Windows CPU, 8 GB)
-6. Evaluate resource usage
-7. Define an adapter boundary
-8. Reuse / wrap / adapt
-9. Build from scratch only when necessary
-
-Smart work over unnecessary custom implementation.
+Do **not** install heavy AI runtimes (Ollama, llama.cpp, sherpa, vector DBs, Python ML stacks) until IPC contracts, capability schemas, and the security gateway boundary are designed.
 
 ## Workflow
 
-Major changes:
-
 Architecture / research → plan → review → implement → tests → build → runtime verification → `git diff` → review → commit
 
-- Do not make broad unrelated changes in one phase.
-- Preserve completed functionality unless the change is an intentional replacement.
-- Do not install packages, change dependencies, or refactor unless the task explicitly requires it.
+- No broad unrelated changes in one phase.
+- Preserve completed functionality unless intentionally replacing it.
+- Documentation-only tasks: do not modify application source or dependencies.
 - Do not commit unless asked.
 
-## Testing (required as native/core appears)
+## Testing (when implementation starts)
 
-Unit tests, integration tests, failure-path tests, permission tests for privileged actions, and CPU/RAM measurements for local AI.
+Unit, integration, failure-path, permission tests for privileged actions, IPC contract tests (React↔Rust and Rust↔Python), resource measurements for local AI.
 
 ## Scope discipline
 
-- Documentation-only tasks: do not modify application source.
+- Do not implement Core or IPC in this documentation phase.
 - Do not choose a permanent LLM/STT/TTS/database.
-- Do not clone drive-by dependencies into Core.
-- When adding a provider, add an adapter + config key, not a global singleton import in React.
+- Do not add a Python process that can `invoke` OS APIs without the gateway.
+- When adding a provider later, add an adapter + config key, not a singleton in React.

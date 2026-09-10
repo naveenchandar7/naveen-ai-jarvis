@@ -1,0 +1,1809 @@
+/* =========================================================
+   NAVEEN AI — HOLOGRAPHIC HUD
+========================================================= */
+
+.hud-root {
+  position: fixed;
+  inset: 0;
+
+  z-index: 30;
+
+  pointer-events: none;
+
+  color: var(--text);
+
+  font-family:
+    "Segoe UI",
+    Inter,
+    Arial,
+    sans-serif;
+}
+
+/* =========================================================
+   GLOBAL BORDER
+========================================================= */
+
+.hud-border {
+  position: fixed;
+  inset: 20px;
+
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 18%,
+      transparent
+    );
+
+  pointer-events: none;
+}
+
+.hud-border::before {
+  content: "";
+
+  position: absolute;
+  inset: 0;
+
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 3%,
+      color-mix(
+        in srgb,
+        var(--primary) 10%,
+        transparent
+      ) 3% 3.05%,
+      transparent 3.05% 96.95%,
+      color-mix(
+        in srgb,
+        var(--primary) 10%,
+        transparent
+      ) 96.95% 97%,
+      transparent 97%
+    );
+
+  opacity: 0.35;
+}
+
+.hud-border-corner {
+  position: absolute;
+
+  width: 34px;
+  height: 34px;
+
+  border-color: var(--primary);
+  border-style: solid;
+
+  opacity: 0.7;
+}
+
+.hud-border-corner--tl {
+  top: -1px;
+  left: -1px;
+
+  border-width: 2px 0 0 2px;
+}
+
+.hud-border-corner--tr {
+  top: -1px;
+  right: -1px;
+
+  border-width: 2px 2px 0 0;
+}
+
+.hud-border-corner--bl {
+  bottom: -1px;
+  left: -1px;
+
+  border-width: 0 0 2px 2px;
+}
+
+.hud-border-corner--br {
+  right: -1px;
+  bottom: -1px;
+
+  border-width: 0 2px 2px 0;
+}
+
+.hud-border-notch {
+  position: absolute;
+
+  width: 62px;
+  height: 1px;
+
+  background: var(--primary);
+
+  opacity: 0.35;
+}
+
+.hud-border-notch--tl {
+  top: 21px;
+  left: 21px;
+}
+
+.hud-border-notch--tr {
+  top: 21px;
+  right: 21px;
+}
+
+.hud-border-notch--bl {
+  bottom: 21px;
+  left: 21px;
+}
+
+.hud-border-notch--br {
+  right: 21px;
+  bottom: 21px;
+}
+
+/* =========================================================
+   TITLE RAIL
+========================================================= */
+
+.hud-title-rail {
+  position: fixed;
+
+  top: 40px;
+  left: 50%;
+
+  transform: translateX(-50%);
+
+  display: flex;
+  align-items: center;
+
+  width: 510px;
+  max-width: 48vw;
+
+  height: 48px;
+
+  border-top:
+    1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 35%,
+      transparent
+    );
+
+  border-bottom:
+    1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 26%,
+      transparent
+    );
+
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(
+        in srgb,
+        var(--surface-strong) 20%,
+        transparent
+      ),
+      transparent
+    );
+
+  backdrop-filter:
+    blur(8px);
+
+  pointer-events: none;
+}
+
+.hud-title-main {
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  width: 100%;
+
+  gap: 12px;
+}
+
+.hud-title-name {
+  color: var(--text);
+
+  font-size: 22px;
+
+  font-weight: 600;
+
+  letter-spacing: 0.16em;
+
+  white-space: nowrap;
+}
+
+.hud-title-divider {
+  color: var(--primary);
+
+  font-size: 17px;
+
+  opacity: 0.8;
+}
+
+.hud-title-subtitle {
+  color: var(--primary);
+
+  font-size: 12px;
+
+  letter-spacing: 0.10em;
+
+  white-space: nowrap;
+}
+
+.hud-title-bracket {
+  position: absolute;
+
+  width: 18px;
+  height: 18px;
+
+  border-color: var(--primary);
+  border-style: solid;
+
+  opacity: 0.75;
+}
+
+.hud-title-bracket--left {
+  left: -1px;
+
+  border-width:
+    1px 0 0 1px;
+}
+
+.hud-title-bracket--right {
+  right: -1px;
+
+  border-width:
+    1px 1px 0 0;
+}
+
+/* =========================================================
+   TOP TELEMETRY
+========================================================= */
+
+.hud-top-right {
+  position: fixed;
+
+  top: 35px;
+  right: 40px;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 13px;
+
+  color: var(--text-muted);
+
+  font-size: 10px;
+
+  letter-spacing: 0.10em;
+}
+
+.hud-top-icon {
+  color: var(--primary);
+
+  opacity: 0.75;
+}
+
+.hud-time {
+  color: var(--text);
+
+  letter-spacing: 0.14em;
+}
+
+/* =========================================================
+   THEME
+========================================================= */
+
+.hud-theme {
+  position: fixed;
+
+  top: 34px;
+  right: 31px;
+
+  transform: translateY(34px);
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  padding: 0;
+
+  border: 0;
+
+  background: transparent;
+
+  color: var(--text-muted);
+
+  font-size: 8px;
+
+  letter-spacing: 0.16em;
+
+  cursor: pointer;
+
+  pointer-events: auto;
+}
+
+.hud-theme-orb {
+  width: 6px;
+  height: 6px;
+
+  border-radius: 50%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 10px var(--primary);
+}
+
+.hud-theme-text {
+  color: var(--primary);
+}
+
+/* =========================================================
+   ACTIVE MODE
+========================================================= */
+
+.hud-active {
+  position: fixed;
+
+  top: 105px;
+  left: 50%;
+
+  transform: translateX(-50%);
+
+  display: flex;
+
+  flex-direction: column;
+
+  align-items: center;
+
+  gap: 8px;
+
+  pointer-events: none;
+}
+
+.hud-active-label {
+  color: var(--primary);
+
+  font-size: 12px;
+
+  letter-spacing: 0.18em;
+}
+
+.hud-active-wave {
+  display: flex;
+
+  align-items: center;
+
+  gap: 2px;
+
+  height: 26px;
+}
+
+.hud-active-wave span {
+  width: 2px;
+
+  min-height: 3px;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+
+  animation:
+    hud-wave 1s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+@keyframes hud-wave {
+  from {
+    transform: scaleY(0.35);
+    opacity: 0.3;
+  }
+
+  to {
+    transform: scaleY(1);
+    opacity: 0.95;
+  }
+}
+
+/* =========================================================
+   CORE
+========================================================= */
+
+.hud-core-state {
+  position: fixed;
+
+  top: 43%;
+  left: 50%;
+
+  transform:
+    translate(-50%, -50%);
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  color: var(--primary);
+
+  font-size: 8px;
+
+  letter-spacing: 0.22em;
+
+  opacity: 0.55;
+}
+
+.hud-core-state span {
+  width: 22px;
+
+  height: 1px;
+
+  background: var(--primary);
+
+  opacity: 0.5;
+}
+
+.hud-core-state b {
+  font-weight: 500;
+}
+
+.hud-core-name {
+  position: fixed;
+
+  top: 72%;
+
+  left: 50%;
+
+  transform: translateX(-50%);
+
+  display: flex;
+
+  flex-direction: column;
+
+  align-items: center;
+
+  pointer-events: none;
+}
+
+.hud-core-name strong {
+  color: var(--text);
+
+  font-size: 17px;
+
+  letter-spacing: 0.35em;
+
+  font-weight: 500;
+}
+
+.hud-core-name small {
+  margin-top: 5px;
+
+  color: var(--primary);
+
+  font-size: 8px;
+
+  letter-spacing: 0.22em;
+}
+
+/* =========================================================
+   SIDE HUD AREAS
+========================================================= */
+
+.hud-left,
+.hud-right {
+  position: fixed;
+
+  top: 88px;
+  bottom: 82px;
+
+  width: 270px;
+
+  display: flex;
+
+  flex-direction: column;
+
+  justify-content: center;
+
+  gap: 18px;
+
+  pointer-events: auto;
+}
+
+.hud-left {
+  left: 78px;
+
+  align-items: flex-start;
+}
+
+.hud-right {
+  right: 78px;
+
+  align-items: flex-end;
+}
+
+/* =========================================================
+   GLASS MODULE
+========================================================= */
+
+.hud-glass {
+  position: relative;
+
+  width: 270px;
+
+  box-sizing: border-box;
+
+  padding:
+    12px 15px;
+
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(
+        in srgb,
+        var(--surface-strong) 15%,
+        transparent
+      ),
+      color-mix(
+        in srgb,
+        var(--surface) 7%,
+        transparent
+      )
+    );
+
+  border:
+    1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 15%,
+      transparent
+    );
+
+  backdrop-filter:
+    blur(12px)
+    saturate(125%);
+
+  box-shadow:
+    inset
+      0 0 22px
+      color-mix(
+        in srgb,
+        var(--primary) 2%,
+        transparent
+      );
+
+  overflow: hidden;
+}
+
+/*
+   The panel isn't a solid box anymore.
+   The background can be seen through it.
+*/
+
+.hud-glass::before {
+  content: "";
+
+  position: absolute;
+
+  top: 0;
+  left: 20px;
+  right: 20px;
+
+  height: 1px;
+
+  background:
+    linear-gradient(
+      90deg,
+      transparent,
+      var(--primary),
+      transparent
+    );
+
+  opacity: 0.38;
+}
+
+.hud-glass::after {
+  content: "";
+
+  position: absolute;
+
+  bottom: 0;
+  left: 0;
+
+  width: 34%;
+
+  height: 1px;
+
+  background: var(--primary);
+
+  opacity: 0.35;
+}
+
+/* =========================================================
+   PANEL CORNERS
+========================================================= */
+
+.hud-glass-corner {
+  position: absolute;
+
+  width: 11px;
+  height: 11px;
+
+  border-color: var(--primary);
+  border-style: solid;
+
+  opacity: 0.7;
+}
+
+.hud-glass-corner--tl {
+  top: -1px;
+  left: -1px;
+
+  border-width:
+    1px 0 0 1px;
+}
+
+.hud-glass-corner--tr {
+  top: -1px;
+  right: -1px;
+
+  border-width:
+    1px 1px 0 0;
+}
+
+.hud-glass-corner--bl {
+  bottom: -1px;
+  left: -1px;
+
+  border-width:
+    0 0 1px 1px;
+}
+
+.hud-glass-corner--br {
+  bottom: -1px;
+  right: -1px;
+
+  border-width:
+    0 1px 1px 0;
+}
+
+/* =========================================================
+   PANEL HEADER
+========================================================= */
+
+.hud-glass-header {
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+}
+
+.hud-glass-eyebrow {
+  margin-bottom: 2px;
+
+  color: var(--text-muted);
+
+  font-size: 7px;
+
+  letter-spacing: 0.15em;
+}
+
+.hud-glass-title {
+  margin: 0;
+
+  color: var(--text);
+
+  font-size: 13px;
+
+  font-weight: 500;
+
+  letter-spacing: 0.10em;
+}
+
+.hud-glass-indicator {
+  width: 4px;
+  height: 4px;
+
+  border-radius: 50%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+
+.hud-glass-rule {
+  width: 100%;
+
+  height: 1px;
+
+  margin:
+    7px 0 9px;
+
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(
+        in srgb,
+        var(--primary) 20%,
+        transparent
+      ),
+      transparent
+    );
+}
+
+.hud-glass-body {
+  min-width: 0;
+}
+
+/* =========================================================
+   BOTTOM STATUS
+========================================================= */
+
+.hud-process {
+  position: fixed;
+
+  left: 50%;
+  bottom: 28px;
+
+  transform:
+    translateX(-50%);
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 9px;
+
+  color: var(--primary);
+
+  font-size: 7px;
+
+  letter-spacing: 0.14em;
+
+  pointer-events: none;
+}
+
+.hud-process i {
+  color: var(--text-muted);
+
+  font-style: normal;
+}
+
+.hud-process-track {
+  width: 160px;
+  height: 3px;
+
+  background:
+    color-mix(
+      in srgb,
+      var(--text) 9%,
+      transparent
+    );
+
+  overflow: hidden;
+}
+
+.hud-process-track span {
+  display: block;
+
+  width: 83%;
+
+  height: 100%;
+
+  background:
+    var(--primary);
+
+  box-shadow:
+    0 0 8px var(--primary);
+}
+
+.hud-process b {
+  color: var(--text-muted);
+
+  font-weight: 400;
+}
+
+/* =========================================================
+   FOOTER
+========================================================= */
+
+.hud-footer {
+  position: fixed;
+
+  left: 50%;
+  bottom: 10px;
+
+  transform: translateX(-50%);
+
+  display: flex;
+
+  gap: 22px;
+
+  color: var(--text-muted);
+
+  font-size: 7px;
+
+  letter-spacing: 0.18em;
+
+  opacity: 0.55;
+}
+
+/* =========================================================
+   RESPONSIVE
+========================================================= */
+
+@media (max-width: 1200px) {
+  .hud-left,
+  .hud-right {
+    width: 230px;
+  }
+
+  .hud-glass {
+    width: 230px;
+  }
+
+  .hud-left {
+    left: 35px;
+  }
+
+  .hud-right {
+    right: 35px;
+  }
+
+  .hud-top-right {
+    right: 25px;
+  }
+}
+
+@media (max-width: 900px) {
+  .hud-title-name {
+    font-size: 16px;
+  }
+
+  .hud-title-subtitle {
+    font-size: 9px;
+  }
+
+  .hud-left,
+  .hud-right {
+    width: 190px;
+  }
+
+  .hud-glass {
+    width: 190px;
+  }
+
+  .hud-left {
+    left: 18px;
+  }
+
+  .hud-right {
+    right: 18px;
+  }
+}
+/* =========================================================
+   HUD DATA CONTENT
+========================================================= */
+
+.hud-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.hud-metric {
+  width: 100%;
+}
+
+.hud-metric-top {
+  display: flex;
+
+  align-items: center;
+  justify-content: space-between;
+
+  gap: 12px;
+}
+
+.hud-metric-label {
+  color: var(--text-muted);
+
+  font-size: 7px;
+
+  letter-spacing: 0.10em;
+
+  white-space: nowrap;
+}
+
+.hud-metric-value {
+  color: var(--text);
+
+  font-size: 8px;
+
+  letter-spacing: 0.07em;
+
+  white-space: nowrap;
+}
+
+.hud-metric-value--active {
+  color: var(--primary);
+
+  text-shadow:
+    0 0 8px
+    color-mix(
+      in srgb,
+      var(--primary) 35%,
+      transparent
+    );
+}
+
+.hud-metric-track {
+  width: 100%;
+
+  height: 2px;
+
+  margin-top: 4px;
+
+  background:
+    color-mix(
+      in srgb,
+      var(--text) 8%,
+      transparent
+    );
+
+  overflow: hidden;
+}
+
+.hud-metric-track span {
+  display: block;
+
+  height: 100%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+
+.hud-task-list {
+  display: flex;
+  flex-direction: column;
+
+  gap: 10px;
+}
+
+.hud-task {
+  width: 100%;
+}
+
+.hud-task-head {
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  gap: 10px;
+
+  color: var(--text);
+
+  font-size: 7px;
+
+  letter-spacing: 0.06em;
+}
+
+.hud-task-head strong {
+  color: var(--primary);
+
+  font-size: 7px;
+
+  font-weight: 500;
+}
+
+.hud-task-track {
+  width: 100%;
+
+  height: 2px;
+
+  margin-top: 4px;
+
+  background:
+    color-mix(
+      in srgb,
+      var(--text) 8%,
+      transparent
+    );
+}
+
+.hud-task-track span {
+  display: block;
+
+  height: 100%;
+
+  background:
+    linear-gradient(
+      90deg,
+      var(--primary),
+      color-mix(
+        in srgb,
+        var(--primary) 65%,
+        white
+      )
+    );
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+/* =========================================================
+   VOICE COMMAND
+========================================================= */
+
+.hud-voice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hud-voice-wave {
+  display: flex;
+
+  align-items: center;
+  justify-content: center;
+
+  gap: 2px;
+
+  height: 38px;
+}
+
+.hud-voice-wave span {
+  width: 2px;
+
+  min-height: 4px;
+
+  border-radius: 2px;
+
+  background: var(--primary);
+
+  opacity: 0.72;
+
+  box-shadow:
+    0 0 6px var(--primary);
+
+  transition:
+    height 90ms linear;
+}
+
+.hud-voice-line {
+  width: 100%;
+  height: 1px;
+
+  background:
+    linear-gradient(
+      90deg,
+      transparent,
+      color-mix(
+        in srgb,
+        var(--primary) 28%,
+        transparent
+      ),
+      transparent
+    );
+}
+
+.hud-voice-status {
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  color: var(--primary);
+
+  font-size: 8px;
+
+  font-weight: 600;
+
+  letter-spacing: 0.12em;
+}
+
+.hud-voice-dot {
+  width: 4px;
+  height: 4px;
+
+  border-radius: 50%;
+
+  background: var(--text-muted);
+}
+
+.hud-voice-dot--active {
+  background: var(--primary);
+
+  box-shadow:
+    0 0 8px var(--primary);
+
+  animation:
+    hud-voice-pulse
+    900ms
+    ease-in-out
+    infinite alternate;
+}
+
+@keyframes hud-voice-pulse {
+  from {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+.hud-voice-transcript {
+  color: var(--text-muted);
+
+  font-size: 8px;
+
+  letter-spacing: 0.04em;
+
+  white-space: nowrap;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+}
+/* =========================================================
+   DATA STREAM
+========================================================= */
+
+.hud-data-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hud-data-chart {
+  height: 48px;
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 2px;
+
+  padding: 0 2px;
+}
+
+.hud-data-chart span {
+  flex: 1;
+
+  min-width: 1px;
+
+  max-width: 4px;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 6px var(--primary);
+
+  opacity: 0.68;
+
+  transition:
+    height 120ms linear;
+}
+
+.hud-data-divider {
+  width: 100%;
+  height: 1px;
+
+  background:
+    color-mix(
+      in srgb,
+      var(--primary) 18%,
+      transparent
+    );
+}
+
+.hud-data-row {
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: center;
+}
+
+.hud-data-row span {
+  color: var(--text-muted);
+
+  font-size: 7px;
+
+  letter-spacing: 0.12em;
+}
+
+.hud-data-row strong {
+  color: var(--text);
+
+  font-size: 8px;
+
+  font-weight: 500;
+}
+
+/* =========================================================
+   NEURAL ACTIVITY
+========================================================= */
+
+.hud-neural-activity {
+  display: flex;
+
+  align-items: center;
+
+  gap: 18px;
+}
+
+.hud-neural-mini-orb {
+  position: relative;
+
+  width: 58px;
+  height: 58px;
+
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 30%,
+      transparent
+    );
+
+  border-radius: 50%;
+
+  box-shadow:
+    inset 0 0 14px
+      color-mix(
+        in srgb,
+        var(--primary) 7%,
+        transparent
+      ),
+    0 0 12px
+      color-mix(
+        in srgb,
+        var(--primary) 8%,
+        transparent
+      );
+
+  flex-shrink: 0;
+
+  animation:
+    hud-neural-orb
+    3s
+    ease-in-out
+    infinite;
+}
+
+.hud-neural-mini-orb::before,
+.hud-neural-mini-orb::after {
+  content: "";
+
+  position: absolute;
+
+  inset: 9px;
+
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--primary) 30%,
+      transparent
+    );
+
+  border-radius: 50%;
+}
+
+.hud-neural-mini-orb::after {
+  inset: 18px;
+
+  border-color:
+    color-mix(
+      in srgb,
+      var(--primary) 42%,
+      transparent
+    );
+}
+
+.hud-neural-mini-orb span {
+  position: absolute;
+
+  width: 3px;
+  height: 3px;
+
+  border-radius: 50%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+
+.hud-neural-mini-orb span:nth-child(1) {
+  top: 8px;
+  left: 26px;
+}
+
+.hud-neural-mini-orb span:nth-child(2) {
+  right: 9px;
+  bottom: 17px;
+}
+
+.hud-neural-mini-orb span:nth-child(3) {
+  left: 12px;
+  bottom: 12px;
+}
+
+@keyframes hud-neural-orb {
+  0%,
+  100% {
+    transform: scale(0.97);
+  }
+
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+.hud-neural-stats {
+  display: flex;
+  flex-direction: column;
+
+  gap: 3px;
+}
+
+.hud-neural-label {
+  color: var(--text-muted);
+
+  font-size: 6px;
+
+  letter-spacing: 0.12em;
+}
+
+.hud-neural-stats strong {
+  color: var(--primary);
+
+  font-size: 15px;
+
+  font-weight: 500;
+
+  letter-spacing: 0.05em;
+
+  margin-bottom: 7px;
+}
+
+/* =========================================================
+   SYSTEM LOG
+========================================================= */
+
+.hud-system-log {
+  display: flex;
+  flex-direction: column;
+
+  gap: 7px;
+}
+
+.hud-log-row {
+  display: grid;
+
+  grid-template-columns:
+    8px 1fr auto;
+
+  align-items: center;
+
+  gap: 5px;
+
+  min-width: 0;
+}
+
+.hud-log-bullet {
+  color: var(--primary);
+
+  font-size: 10px;
+}
+
+.hud-log-message {
+  overflow: hidden;
+
+  color: var(--text);
+
+  font-size: 7px;
+
+  letter-spacing: 0.04em;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+}
+
+.hud-log-row time {
+  color: var(--text-muted);
+
+  font-size: 6px;
+
+  letter-spacing: 0.05em;
+}
+/* =========================================================
+   WEATHER
+========================================================= */
+
+.hud-weather {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hud-weather-main {
+  display: grid;
+
+  grid-template-columns:
+    42px 1fr;
+
+  column-gap: 10px;
+
+  align-items: center;
+}
+
+.hud-weather-icon {
+  position: relative;
+
+  width: 36px;
+  height: 28px;
+}
+
+.hud-weather-icon::before {
+  content: "";
+
+  position: absolute;
+
+  left: 5px;
+  bottom: 4px;
+
+  width: 25px;
+  height: 12px;
+
+  border:
+    1px solid
+    var(--primary);
+
+  border-radius: 12px 12px 7px 7px;
+
+  box-shadow:
+    0 0 10px
+      color-mix(
+        in srgb,
+        var(--primary) 18%,
+        transparent
+      );
+}
+
+.hud-weather-icon span {
+  position: absolute;
+
+  border:
+    1px solid
+    var(--primary);
+
+  border-radius: 50%;
+}
+
+.hud-weather-icon span:first-child {
+  left: 10px;
+  top: 6px;
+
+  width: 10px;
+  height: 10px;
+}
+
+.hud-weather-icon span:last-child {
+  left: 17px;
+  top: 3px;
+
+  width: 13px;
+  height: 13px;
+}
+
+.hud-weather-main strong {
+  display: block;
+
+  color: var(--text);
+
+  font-size: 20px;
+
+  font-weight: 400;
+
+  letter-spacing: 0.04em;
+}
+
+.hud-weather-main small {
+  display: block;
+
+  margin-top: 2px;
+
+  color: var(--text-muted);
+
+  font-size: 7px;
+
+  letter-spacing: 0.08em;
+}
+
+.hud-weather-meta {
+  display: grid;
+
+  grid-template-columns: 1fr 1fr;
+
+  gap: 12px;
+}
+
+.hud-weather-meta div {
+  display: flex;
+  flex-direction: column;
+
+  gap: 3px;
+}
+
+.hud-weather-meta span {
+  color: var(--text-muted);
+
+  font-size: 6px;
+
+  letter-spacing: 0.12em;
+}
+
+.hud-weather-meta strong {
+  color: var(--text);
+
+  font-size: 8px;
+
+  font-weight: 400;
+}
+
+/* =========================================================
+   AI RESPONSE
+========================================================= */
+
+.hud-response {
+  display: flex;
+  flex-direction: column;
+
+  gap: 10px;
+}
+
+.hud-response-status {
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+  color: var(--primary);
+
+  font-size: 7px;
+
+  letter-spacing: 0.12em;
+}
+
+.hud-response-status span {
+  width: 4px;
+  height: 4px;
+
+  border-radius: 50%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+
+.hud-response-message {
+  min-height: 28px;
+
+  color: var(--text-muted);
+
+  font-size: 8px;
+
+  line-height: 1.55;
+}
+
+.hud-response-track {
+  width: 100%;
+  height: 2px;
+
+  background:
+    color-mix(
+      in srgb,
+      var(--text) 8%,
+      transparent
+    );
+
+  overflow: hidden;
+}
+
+.hud-response-track span {
+  display: block;
+
+  height: 100%;
+
+  background: var(--primary);
+
+  box-shadow:
+    0 0 7px var(--primary);
+}
+/* =========================================================
+   HUD AMBIENT MOTION
+   Subtle holographic atmosphere
+========================================================= */
+
+.hud-root::before {
+  content: "";
+
+  position: fixed;
+  inset: 0;
+
+  pointer-events: none;
+
+  z-index: -1;
+
+  background:
+    radial-gradient(
+      circle at 50% 48%,
+      color-mix(
+        in srgb,
+        var(--primary) 7%,
+        transparent
+      ) 0%,
+      transparent 34%
+    ),
+    radial-gradient(
+      circle at 50% 50%,
+      transparent 42%,
+      color-mix(
+        in srgb,
+        var(--primary) 2%,
+        transparent
+      ) 100%
+    );
+}
+
+/* Very subtle horizontal holographic scan */
+
+.hud-root::after {
+  content: "";
+
+  position: fixed;
+  left: 0;
+  right: 0;
+
+  top: -15%;
+
+  height: 18%;
+
+  pointer-events: none;
+
+  z-index: 50;
+
+  background:
+    linear-gradient(
+      180deg,
+      transparent 0%,
+      color-mix(
+        in srgb,
+        var(--primary) 3%,
+        transparent
+      ) 48%,
+      color-mix(
+        in srgb,
+        var(--primary) 9%,
+        transparent
+      ) 50%,
+      color-mix(
+        in srgb,
+        var(--primary) 3%,
+        transparent
+      ) 52%,
+      transparent 100%
+    );
+
+  opacity: 0.45;
+
+  animation:
+    hud-scan
+    8s
+    linear
+    infinite;
+}
+
+@keyframes hud-scan {
+  0% {
+    transform: translateY(-15vh);
+  }
+
+  100% {
+    transform: translateY(125vh);
+  }
+}
+
+/* Panel edges breathe very slightly */
+
+.hud-glass {
+  animation:
+    hud-panel-breathe
+    4.5s
+    ease-in-out
+    infinite;
+}
+
+@keyframes hud-panel-breathe {
+  0%,
+  100% {
+    border-color:
+      color-mix(
+        in srgb,
+        var(--primary) 14%,
+        transparent
+      );
+  }
+
+  50% {
+    border-color:
+      color-mix(
+        in srgb,
+        var(--primary) 21%,
+        transparent
+      );
+  }
+}
+
+/* Tiny telemetry pulse */
+
+.hud-glass-indicator {
+  animation:
+    hud-indicator
+    1.8s
+    ease-in-out
+    infinite alternate;
+}
+
+@keyframes hud-indicator {
+  from {
+    opacity: 0.35;
+    box-shadow:
+      0 0 3px var(--primary);
+  }
+
+  to {
+    opacity: 1;
+    box-shadow:
+      0 0 9px var(--primary);
+  }
+}
+
+/* Bottom processing line */
+
+.hud-process-track span {
+  animation:
+    hud-progress-pulse
+    1.7s
+    ease-in-out
+    infinite alternate;
+}
+
+@keyframes hud-progress-pulse {
+  from {
+    opacity: 0.65;
+  }
+
+  to {
+    opacity: 1;
+  }
+}

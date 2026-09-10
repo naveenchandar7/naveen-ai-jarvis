@@ -1,0 +1,54 @@
+import { useEffect } from "react";
+
+import {
+  setAssistantState,
+  type AssistantState,
+} from "../state/assistantState";
+
+const KEY_STATE_MAP: Record<
+  string,
+  AssistantState
+> = {
+  "1": "idle",
+  "2": "listening",
+  "3": "thinking",
+  "4": "speaking",
+};
+
+export function useAssistantKeyboard() {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+
+      const isTyping =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+
+      if (isTyping) {
+        return;
+      }
+
+      const nextState =
+        KEY_STATE_MAP[event.key];
+
+      if (!nextState) {
+        return;
+      }
+
+      setAssistantState(nextState);
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleKeyDown,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleKeyDown,
+      );
+    };
+  }, []);
+}

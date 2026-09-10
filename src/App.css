@@ -1,0 +1,150 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--background);
+  color: var(--text);
+  font-family: var(--font-main);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.naveen-app {
+  position: relative;
+
+  width: 100%;
+  height: 100%;
+
+  overflow: hidden;
+
+  background:
+    radial-gradient(circle at center, rgba(0, 217, 255, 0.08), transparent 38%),
+    var(--background);
+}
+
+/* -------------------------------------------
+   3D Nova Core canvas
+-------------------------------------------- */
+
+.nova-core-scene {
+  position: absolute;
+  inset: 0;
+
+  width: 100%;
+  height: 100%;
+
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* -------------------------------------------
+   HUD overlay
+-------------------------------------------- */
+
+.hud-overlay {
+  position: fixed;
+  inset: 0;
+
+  pointer-events: none;
+
+  z-index: 10;
+}
+
+.hud-status {
+  position: absolute;
+
+  top: 32px;
+  left: 36px;
+
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+
+  padding: 12px 16px;
+
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+
+  background: var(--surface);
+
+  backdrop-filter: blur(14px);
+
+  box-shadow: var(--glow);
+
+  font-size: 10px;
+  letter-spacing: 0.18em;
+}
+
+.hud-status span:first-child {
+  color: var(--primary);
+}
+
+.hud-status span:last-child {
+  color: var(--text-muted);
+}
+
+.hud-title {
+  position: absolute;
+
+  top: 32px;
+  left: 50%;
+
+  transform: translateX(-50%);
+
+  color: var(--text);
+
+  font-size: 11px;
+  letter-spacing: 0.42em;
+
+  opacity: 0.9;
+}
+
+.core-name {
+  position: absolute;
+
+  left: 50%;
+  top: calc(50% + 170px);
+
+  transform: translateX(-50%);
+
+  color: var(--text);
+
+  font-size: 18px;
+  font-weight: 600;
+
+  letter-spacing: 0.55em;
+
+  text-shadow:
+    0 0 14px var(--primary),
+    0 0 30px var(--shadow);
+}
+
+.core-state {
+  position: absolute;
+
+  left: 50%;
+  top: calc(50% + 202px);
+
+  transform: translateX(-50%);
+
+  color: var(--primary);
+
+  font-size: 9px;
+  letter-spacing: 0.34em;
+
+  opacity: 0.85;
+}

@@ -4,7 +4,19 @@ Permanent system blueprint for NAVEEN / JARVIS: a long-term **standalone persona
 
 Agent-facing engineering rules: [`../AGENTS.md`](../AGENTS.md).
 
-This document describes the **target architecture**, maps it onto the **current repository**, and records **locked vs open** decisions. It does not choose a permanent LLM, STT, TTS, database, or cloud vendor.
+This document describes the **target architecture**, a **provisional hybrid runtime split**, maps both onto the **current repository**, and records **locked / provisional / open** decisions. It does not choose a permanent LLM, STT, TTS, database, IPC protocol, Python packager, or cloud vendor.
+
+**Status:** documentation and architecture planning only. No Python Core, Device Gateway traits, or host↔core IPC exist in the codebase yet.
+
+---
+
+## 0. Decision classes
+
+| Class | Meaning |
+| --- | --- |
+| **LOCKED** | Invariants. Violating them is an architecture bug. Change only by revising this document and `AGENTS.md`. |
+| **PROVISIONAL** | The hybrid split chosen now: React presentation, Rust/Tauri native host, Python AI Core, secured IPC. Preferred for the next implementation phases; may be revised with an explicit architecture update. |
+| **INTENTIONALLY OPEN** | Must remain behind interfaces. Do not hardcode a winner in Core, host, or UI. |
 
 ---
 
@@ -12,25 +24,30 @@ This document describes the **target architecture**, maps it onto the **current 
 
 - A personal assistant that accepts **voice, text, and (later) gesture**, plans work, uses tools, remembers what should be remembered, and researches when it does not know.
 - **Modular, provider-independent, model-independent, replaceable, upgradeable, hardware-independent, secure, offline-first.**
-- Swap Gemma → another model, Ollama → another runtime, whisper.cpp or sherpa-onnx → another STT, Kokoro → another TTS, SQLite/vector store → another memory, laptop → phone / Raspberry Pi, HUD → another UI **without rewriting Core**.
+- Swap UI, STT, TTS, LLM runtime, memory backend, or device **without rewriting** the capability/security contracts.
 - Run usefully on the initial target: **Windows, 8 GB RAM, no NVIDIA GPU, CPU-focused local inference**, **Tamil + English + mixed Tamil–English**, offline-first.
-- Treat security, permissions, and audit as first-class — not an afterthought bolted onto the HUD.
+- **Python AI Core must not have unrestricted OS access.** Privileged work always goes through the Security Gateway and Rust Device Gateway.
+- Treat security, permissions, and audit as first-class.
 
 ## 2. Non-goals
 
-- Embedding cognition in React / Three.js components.
-- Hardcoding a single commercial API as “the brain.”
+- Embedding cognition in React / Three.js.
+- Letting the webview call Python, or Python call the OS, while skipping Rust.
+- Hardcoding Gemma, Qwen, Llama, Ollama, whisper.cpp, sherpa-onnx, Kokoro, SQLite, Mem0, or any model filename as “the” implementation.
 - Rebuilding whisper, ONNX VAD, llama.cpp, or vector search from scratch.
 - Unrestricted self-modification or silent privilege escalation.
 - Persisting every utterance into long-term memory.
-- Assuming powerful GPUs, unlimited RAM, or always-on network.
-- Using browser `SpeechRecognition` or running STT/LLM inference in the webview.
+- Assuming GPUs, unlimited RAM, or always-on network.
+- Browser `SpeechRecognition` or STT/LLM inference in the webview.
 - Treating Tauri capability JSON as the JARVIS tool registry.
+- Installing heavy AI runtimes before IPC and security boundaries exist.
 - Shipping cloud-required features as the default path.
 
 ---
 
-## 3. Target architecture
+## 3. Architecture
+
+### 3.1 Logical pipeline (LOCKED)
 
 ```text
 User
@@ -44,131 +61,187 @@ User
   → Laptop / Phone / Future Devices
 ```
 
+Privileged operations (LOCKED):
+
+```text
+AI Core
+  → Capability Registry
+  → Security / Permission Gateway
+  → Rust Device Gateway
+  → Device / OS
+```
+
+### 3.2 Provisional hybrid runtime
+
+```text
+React / Three.js     presentation client only
+        ↕  Tauri IPC (existing webview ↔ host pattern)
+Rust / Tauri         native host
+                     Device Gateway
+                     CPAL / audio device access
+                     system telemetry
+                     OS / native operations
+                     security boundary
+                     authentication / authorization
+                     permission policy
+                     sandbox / isolation
+                     secure IPC
+                     future device adapters
+        ↕  versioned, authenticated, least-privilege IPC
+Python AI Core       JARVIS Orchestrator
+                     intent understanding
+                     planning
+                     model manager / router
+                     LLM provider adapters
+                     memory layer
+                     research engine
+                     agent / tool orchestration
+                     MCP integrations where appropriate
+```
+
 ```mermaid
 flowchart TB
   User[User]
-  subgraph inputs [Input Gateway]
-    Voice[Voice]
-    Text[Text]
-    Gesture[Gesture]
+  HUD[React Three.js HUD]
+  subgraph rustHost [Rust Tauri native host PROVISIONAL]
+    TauriIPC[Secure webview IPC]
+    Sec[Security Permission Gateway]
+    Dev[Device Gateway]
+    Audio[CPAL audio]
+    Tele[sysinfo telemetry]
+    OsOps[OS native operations]
   end
-  Core[JARVIS Core Orchestrator]
-  Intent[Intent plus Planning]
-  Ctx[Context Memory Research ModelManager]
-  Caps[Capability Registry]
-  Sec[Security Permission Gateway]
-  Dev[Device Gateway]
+  subgraph pyCore [Python AI Core PROVISIONAL]
+    Orch[Orchestrator]
+    Intent[Intent plus Planning]
+    Models[Model Manager]
+    Mem[Memory]
+    Research[Research]
+    Caps[Capability Registry]
+    Mcp[MCP adapters]
+  end
   Laptop[Windows laptop]
   Phone[Phone]
   Pi[Raspberry Pi]
   Future[Future devices]
-  HUD[React HUD presentation]
 
-  User --> Voice
-  User --> Text
-  User --> Gesture
-  Voice --> Core
-  Text --> Core
-  Gesture --> Core
-  Core --> Intent
-  Intent --> Ctx
-  Ctx --> Caps
+  User --> HUD
+  User --> Audio
+  HUD --> TauriIPC
+  TauriIPC --> Sec
+  Audio --> Dev
+  Tele --> Dev
+  OsOps --> Dev
+  Dev --> Sec
+  Sec <--> Orch
+  Orch --> Intent
+  Intent --> Models
+  Intent --> Mem
+  Intent --> Research
+  Orch --> Caps
   Caps --> Sec
-  Sec --> Dev
+  Mcp --> Caps
   Dev --> Laptop
   Dev --> Phone
   Dev --> Pi
   Dev --> Future
-  Core --> HUD
-  Dev --> HUD
 ```
 
-The HUD is a **subscriber and display**, not a box on the privileged path.
+**LOCKED:** the HUD is a subscriber/display. It is not on the privileged path.
+
+**LOCKED:** Python Core does not receive unrestricted OS access. It **requests** capabilities; the Rust host **authorizes and executes** device/OS work.
+
+**PROVISIONAL:** cognition in Python; privileged native work in Rust; IPC between them.
+
+**OPEN:** how Python is packaged, which IPC protocol is used, whether Core is one process or several.
+
+### 3.3 Communication rules (PROVISIONAL mechanism, LOCKED policy)
+
+| Hop | Mechanism today | Target policy |
+| --- | --- | --- |
+| React ↔ Rust | `@tauri-apps/api` `invoke` in `src/services/native/tauriBridge.ts` | Keep; prefer events; Tauri ACL + CSP |
+| Rust ↔ Python | **Not implemented** | Versioned schema, authenticated, least privilege, deny-by-default methods |
+| React ↔ Python | **Forbidden** | No direct socket, stdio, or HTTP from the webview to Core |
+
+IPC to Python exposes **capability request APIs and cognitive events**, not raw `shell`, arbitrary FS, or an always-on microphone tap.
 
 ---
 
 ## 4. Layer responsibilities
 
-| Layer | Responsibility |
-| --- | --- |
-| **Input Gateway** | Normalize voice transcripts, typed text, and future gestures into a single Core inbox. Does not plan or call tools. |
-| **JARVIS Core / Orchestrator** | Session, turn lifecycle, routing to planners, emitting UI/core events. No React imports. |
-| **Intent + Planning** | Classify intent, produce a plan (possibly multi-step), request research when uncertain. |
-| **Context** | Assemble working context for a turn (not durable memory). |
-| **Memory** | First-class stores with typed namespaces; write policies; recall APIs. |
-| **Research** | Capability: gather, verify, synthesize; optional memory write. |
-| **Model Manager / Router** | Select a `ModelProvider` per task; enforce resource policy; load/unload. |
-| **Capability Registry** | Named tools with schemas, permissions, risk, adapters, verification. |
-| **Security / Permission Gateway** | Authn/authz, deny-by-default, confirmation, secrets, audit, network, kill switch. Every privileged call passes here. |
-| **Device Gateway** | Stable traits for audio, telemetry, FS, processes, sensors. Per-device adapters. |
-| **Presentation** | React HUD + Nova Core visuals. Display and non-privileged input only. |
+| Layer | Runtime (provisional) | Responsibility |
+| --- | --- | --- |
+| **Presentation** | React / R3F | Display; non-privileged input; subscribe to events |
+| **Input Gateway** | Host captures audio; Core consumes text events | Normalize voice/text/gesture into one Core inbox |
+| **JARVIS Core / Orchestrator** | Python AI Core | Session, turns, routing, UI-bound core events via host |
+| **Intent + Planning** | Python | Classify intent, plan steps, request research |
+| **Context** | Python | Working context for a turn |
+| **Memory** | Python behind `MemoryStore` | Durable/second-brain stores; policy-gated writes |
+| **Research** | Python capability | Retrieve, verify, synthesize |
+| **Model Manager / Router** | Python | Select `ModelProvider`; resource-aware load/unload |
+| **Capability Registry** | Python catalog + host enforcement | Schemas, permissions, risk; **execution of privileged adapters is host-side** |
+| **Security / Permission Gateway** | **Rust host** (primary) | Authn/authz, policy, confirm, secrets, audit, network, kill switch |
+| **Device Gateway** | **Rust host** | Audio, telemetry, FS, processes, future devices |
+| **MCP** | Python client allowed | Must call tools only through Registry + Gateway; OS effects via Rust |
+
+Tauri ACL remains a **webview IPC allowlist**. It is not the JARVIS Capability Registry.
 
 ### 4.1 Current repository mapping
 
 | Path | Role today | Target role |
 | --- | --- | --- |
-| `src/App.tsx` | Composes HUD; polls telemetry; **starts microphone** | HUD shell only; subscribe to events |
-| `src/components/hud/` | Glass HUD panels | Keep as dumb views |
-| `src/components/core/` | Three.js Nova Core | Keep as visual engine |
-| `src/components/speaking/` | Unused speaking visual | Optional visual for `speaking` state |
-| `src/config/theme*.ts`, `visualState.ts`, `visualProfiles.ts` | Theme + visual profiles | Presentation only |
-| `src/config/hudModel.ts` | Presentation types (mostly unused) | HUD view-model fed by Core/device events |
-| `src/config/assistantConfig.ts` | Display names | Branding only — not model choice |
-| `src/state/assistantState.ts` | UX state store | Map **from** Core events; never become Core |
-| `src/services/native/tauriBridge.ts` | `invoke` wrappers | Thin client; add event listeners |
-| `src/services/voice/*`, `stt/*` | Interfaces + stub STT factory; `VoiceController` unwired | TS side of native STT events; inference stays native |
-| `src/services/assistantEnvironment.ts` | Unused Tauri/browser detect | Optional presentation hint only |
-| `src-tauri/src/lib.rs` | `jarvis_ping`, `get_system_info`, mic commands | Device Gateway host + Core host |
-| `src-tauri/src/audio.rs` | CPAL capture, RMS only; PCM dropped | Audio adapter: PCM tap → VAD → STT |
-| `src-tauri/capabilities/default.json` | `core:default` IPC ACL | Stay IPC ACL; not tool registry |
-| `src-tauri/tauri.conf.json` | Product name JARVIS; CSP `null`; template identifier | Harden host; still not Core |
-
-**Not present:** orchestrator, intent/planning, memory store, research engine, model manager, capability registry, runtime permission gateway, TTS, wake word, VAD, real STT, local LLM.
+| `src/App.tsx` | HUD; polls telemetry; **starts microphone** | Presentation only; subscribe to host events |
+| `src/components/hud/` | Glass HUD | Dumb views |
+| `src/components/core/` | Nova Core visuals | Visual engine |
+| `src/config/theme*.ts`, `visualState.ts`, `visualProfiles.ts` | Theme / visuals | Presentation |
+| `src/config/hudModel.ts` | Presentation types | View-model from host/core events |
+| `src/config/assistantConfig.ts` | Display names | Branding only |
+| `src/state/assistantState.ts` | UX state | Map from core/host events |
+| `src/services/native/tauriBridge.ts` | React → Rust `invoke` | Only React↔Rust client |
+| `src/services/voice/*` | STT interfaces; stub factory; unwired controller | HUD/host event types; no webview inference |
+| `src-tauri/src/lib.rs` | ping, sysinfo, mic commands | Native host + Device Gateway + security + Python IPC supervisor |
+| `src-tauri/src/audio.rs` | CPAL RMS; PCM dropped | Audio adapter (PCM → VAD → STT) |
+| `src-tauri/capabilities/default.json` | `core:default` | Webview ACL only |
+| Python AI Core | **Absent** | Provisional cognition process |
+| Host↔Core IPC | **Absent** | Versioned authenticated bus |
 
 ---
 
 ## 5. Interfaces and boundaries
 
-Use traits/interfaces + config. Core depends on abstractions, not crates named after a vendor.
-
-Conceptual contracts (names are illustrative):
+Core (Python) and host (Rust) share **versioned contracts**, not vendor types.
 
 ```text
 InputEvent { source: voice|text|gesture, text, locale?, utterance_id }
 
 SttProvider { start, stop, abort; events: partial, final, error }
-VadProvider { on_pcm → speech_start / speech_end / is_speech }
-TtsProvider { speak, stop; events: audio_out / done }
-ModelProvider { complete | stream; modality; resource_cost }
+VadProvider { on_pcm → speech_start / speech_end }
+TtsProvider { speak, stop }
+ModelProvider { complete | stream }
 EmbeddingProvider { embed }
 MemoryStore { recall, write, forget, namespaces }
+
 Capability {
   id, input_schema, output_schema,
   permissions[], risk, device_requirements,
   adapter, verification
 }
-DeviceGateway {
-  audio: AudioAdapter
-  telemetry: TelemetryAdapter
-  ...
-}
-SecurityGateway { authorize(action) → Allow | Deny | Confirm }
-ResourceManager { snapshot hardware; can_load(model); unload }
+
+CapabilityRequest  →  SecurityGateway.authorize()
+DeviceGateway { audio, telemetry, fs, process, ... }
+HostCoreIpc { version, auth, methods[], events[] }
+ResourceManager { hardware snapshot; can_load; unload }
 ```
 
-**Forbidden crossings**
+**Forbidden crossings (LOCKED)**
 
-- React component → OS privileged API (except via Core/Gateway).
-- Webview → raw PCM / ONNX / llama inference.
-- Capability adapter → skip Security Gateway.
-- MCP client → host tools without JARVIS permission + audit.
-- Core → `C:\Users\...` hardcoded paths or API keys.
-- HUD `MemoryPanel` → SQL/vector writes.
-
-**Two “capability” systems (do not conflate)**
-
-1. **Tauri ACL** (`src-tauri/capabilities/default.json`): which webview may call which IPC commands.
-2. **JARVIS Capability Registry** (future Core): which assistant tools exist and who may run them.
+- React → Python (any channel)
+- React → OS privileged API except via Rust
+- Webview → PCM / STT / LLM inference
+- Python → unrestricted shell, FS, network, or raw microphone
+- Capability / MCP adapter → skip Security Gateway
+- Hardcoded absolute paths, API keys, model filenames in Core or UI
+- HUD `MemoryPanel` → database writes
 
 ---
 
@@ -177,316 +250,247 @@ ResourceManager { snapshot hardware; can_load(model); unload }
 ### 6.1 Text turn (target)
 
 ```text
-User types
-  → Input Gateway (non-privileged)
-  → Core inbox
+User types in HUD
+  → Tauri IPC (non-privileged input)
+  → Rust host (authn of session; forward)
+  → Python Core inbox
   → Intent + Plan
-  → Context assembly (working memory + selected long-term)
-  → Model Manager (optional generation)
-  → Capability Registry (if tools needed)
-  → Security Gateway
-  → Device Gateway / adapters
-  → Results back to Core
-  → Events to HUD (response, progress, state)
+  → Memory / Research / Model Manager as needed
+  → Capability request if tools needed
+  → Rust Security Gateway
+  → Rust Device Gateway
+  → Result to Core
+  → Events to HUD via Rust
 ```
 
 ### 6.2 Voice turn (target)
 
-See [§8 Voice pipeline](#8-voice-pipeline).
+See [§8](#8-voice-pipeline).
 
 ### 6.3 Current (as implemented)
 
 ```text
-Mic → CPAL → RMS mutex → JS poll 120ms → VoicePanel waveform
-sysinfo → JS poll 2s → SystemPanel (CPU/RAM/uptime)
-jarvis_ping → console "CORE_ONLINE"  (health string only)
-STT factory → no-op
-VoiceController → not mounted
+Mic → CPAL → RMS → JS poll 120ms → VoicePanel
+sysinfo → JS poll 2s → SystemPanel
+jarvis_ping → "CORE_ONLINE"  (not Core)
+STT stub → no-op
+Python Core → absent
+Rust ↔ Python IPC → absent
 ```
 
 ---
 
-## 7. Security flow
+## 7. Security flow (LOCKED policy)
 
-Defense in depth. Deny by default.
+Defense in depth:
 
 ```text
-Request (UI event, transcript, MCP, capability call)
-  → Authentication (who is acting)
-  → Authorization / policy (is this allowed)
-  → Risk class
-       low    → allow + audit
-       medium → allow if session trusted + audit
-       high   → explicit confirmation and/or re-auth + audit
-  → Secrets check (never inject raw secrets into prompts or UI)
-  → Network policy (offline/safe mode may deny)
-  → Sandbox / adapter execution
-  → Audit log
+Tauri ACL
+  + Rust security gateway
+  + authentication
+  + authorization
+  + least privilege
+  + capability policies
+  + sandbox / isolation
+  + secret isolation
+  + audit logging
+  + network policy
+  + safe / offline mode
+  + kill switch
+  + rollback
+```
+
+```text
+Request (HUD, transcript, MCP, capability call)
+  → Authenticate
+  → Authorize (deny by default)
+  → Risk class (low / medium / high+confirm)
+  → Secrets check
+  → Network policy
+  → Sandboxed adapter on the host
+  → Audit
   → Optional rollback / kill switch
 ```
 
-Must include, as the system grows:
+The AI must never:
 
-- Authentication and authorization
-- Least privilege
-- Deny-by-default policies
-- Capability-level permissions
-- Dangerous-operation confirmation
-- Secrets isolation (not in git, HUD, or model prompts)
-- Audit logs
-- Sandboxing / isolation
-- Network policy
-- Safe / offline mode
-- Kill switch
-- Rollback
-- Suspicious-activity detection
-- Prompt-injection defenses for **external** content (web, files, MCP, tool output)
-- Secure update process
+- bypass authentication
+- bypass authorization
+- grant itself privileges
+- disable security controls
+- expose secrets
+- silently execute arbitrary untrusted code
+- modify its own security controls without controlled review
 
-**Hard prohibitions**
+“User said so” is **not** enough for dangerous actions.
 
-JARVIS must never:
-
-- bypass its own permission system
-- silently elevate privileges
-- disable authentication
-- reveal secrets
-- silently grant itself new capabilities
-- execute arbitrary untrusted code without policy approval
-- modify its security layer without controlled review
-
-“User said so” is **not** sufficient for dangerous actions (destructive FS, shell, payments, identity, security-config changes). Those require appropriate authentication and/or explicit confirmation.
-
-External tool protocols (including MCP) **must not** bypass this gateway.
+Python’s IPC surface is a **short allowlist of methods**, independently of what a model “wants.” Prompt injection on tool output is untrusted input.
 
 ---
 
 ## 8. Voice pipeline
 
-### 8.1 Target
+### 8.1 Target (LOCKED shape)
 
 ```text
-Microphone
-  → Device Gateway audio adapter (CPAL on current laptop)
-  → PCM pipeline (resample to provider needs, typically 16 kHz mono)
-  → VAD (Silero or equivalent behind VadProvider)
-  → SttProvider (sherpa-onnx, whisper.cpp, or other)
-  → text event (partial / final)
-  → JARVIS Core (same inbox as typed text)
+CPAL
+  → PCM pipeline          (Rust Device Gateway)
+  → VAD
+  → SttProvider
+  → text event
+  → JARVIS Core           (Python inbox, via host IPC)
 ```
 
-- Audio buffers and STT inference stay **native**.
-- HUD receives **levels, VAD state, transcripts, errors** — not PCM (except an explicit debug flag).
-- `SttProvider` remains an interface. Engines are adapters selected by configuration.
+- Native audio stays **outside the webview**.
+- HUD gets levels, VAD state, transcripts, errors — not PCM (except an explicit debug flag).
+- TTS uses `TtsProvider` (OPEN implementation).
 
-### 8.2 Replaceable STT / VAD candidates (not locked)
+### 8.2 Candidates (OPEN which one)
 
-| Candidate | Intended use | Notes |
-| --- | --- | --- |
-| **Silero VAD** | Gate utterances on CPU | Prefer via sherpa-onnx bundled VAD or a single ONNX runtime; not HUD RMS |
-| **sherpa-onnx** | First streaming STT candidate | CPU ONNX; evaluate Tamil + English + code-mix |
-| **whisper.cpp** | Offline quality / fallback STT | CPU; small multilingual models on 8 GB; not the webview |
+| Candidate | Role |
+| --- | --- |
+| Silero VAD | Utterance gate on CPU |
+| sherpa-onnx | Streaming STT candidate |
+| whisper.cpp | Offline / quality STT candidate |
 
-Do not rebuild these. Wrap them. Do not make any of them the only possible backend.
+Do not rebuild them. Do not lock one. Exact process that **runs** VAD/STT (Rust host vs constrained helper) is **OPEN**; capture remains in Rust; Python does not get unrestricted PCM.
 
 ### 8.3 Current voice code
 
-- Native: `src-tauri/src/audio.rs` computes RMS and **drops PCM**.
-- UI meter: `src/components/hud/VoicePanel.tsx` (display noise gate `0.028` is **not** VAD).
-- Contracts: `src/services/voice/stt/sttTypes.ts`, stub `createSttProvider()` in `sttProvider.ts` (explicitly forbids browser SpeechRecognition).
-- `VoiceController` exists but is **not** used by `App.tsx`.
-- `App.tsx` currently **owns mic start/stop** — conflict with the rule that UI must not own microphone lifecycle. Future work moves session control to Device Gateway + Security Gateway.
+- `src-tauri/src/audio.rs`: RMS; PCM dropped
+- `VoicePanel`: display gate, not VAD
+- `sttProvider.ts`: no-op; forbids SpeechRecognition
+- `VoiceController`: unused
+- `App.tsx`: owns mic start — debt
 
 ### 8.4 Language
 
-Target languages: Tamil, English, mixed Tamil–English. Locale and model choice are **configuration + Model/STT manager**, not hardcoded strings in Core. Offline-first: network STT is optional and permissioned.
+Tamil, English, mixed Tamil–English via **config**, not hardcoded model IDs.
 
 ---
 
-## 9. Model architecture
+## 9. Model architecture (LOCKED interface)
 
 ```text
-Task (chat, plan, embed, classify, …)
-  → ModelRouter / Model Manager
+Task
+  → ModelRouter / Model Manager     (Python, provisional)
   → ModelProvider adapter
-       local GGUF / llama.cpp
        Ollama
-       future providers
-       optional cloud (later, permissioned)
-  → Completion / stream
+       llama.cpp
+       OpenAI-compatible providers
+       future local / cloud
 ```
 
-Rules:
+No model or provider is permanent. **Do not hardcode** Gemma, Qwen, Llama, Ollama, or any filename.
 
-- No model or provider is permanent.
-- Gemma, Ollama, llama.cpp, etc. are **candidates**.
-- Resource Manager participates: detect CPU/RAM/GPU/VRAM; refuse simultaneous heavy loads; unload/switch; pick smaller models on 8 GB CPU-only machines.
-- Cloud providers default **off**; enabling them is a security + network policy decision.
+Cloud defaults **off** (network policy). Resource Manager applies on 8 GB CPU-only hardware; future GPU is an adapter/resource fact, not a rewrite of Core.
 
 ---
 
-## 10. Memory architecture
+## 10. Memory architecture (LOCKED interface)
 
-Memory is first-class and native. **Do not blindly save every conversation.**
+First-class, policy-gated. **Do not blindly save every conversation.**
 
-| Kind | Purpose |
-| --- | --- |
-| Working context | Current turn / active plan |
-| Temporary session | Ephemeral; discard on session end unless promoted |
-| Long-term memory | Explicit or policy-promoted facts |
-| Structured knowledge | Typed records |
-| Project memory | Per-project |
-| Learning memory | Controlled lessons from outcomes |
-| Ideas / decisions / goals | User-owned cognitive artifacts |
-| Preferences | Style, language, confirmation thresholds |
-| Documents | Files and derived chunks |
+Namespaces: working context, session, long-term, structured knowledge, project, learning, ideas, decisions, goals, preferences, documents.
 
-Writes go through policy (what is allowed to persist). Recall is assembled into Context, not dumped wholesale into the prompt.
+**OPEN backends (examples, none locked):** SQLite/vector, Mem0, MemPalace, LanceDB, future systems.
 
-**Name collisions in this repo**
-
-- `get_system_info.memory_*` — hardware RAM.
-- `src/components/hud/MemoryPanel.tsx` — unused HUD for “context used / entries.”
-- Future Core memory — second brain.
-
-Implementation (SQLite, sqlite-vec, LanceDB, …) is **replaceable** behind `MemoryStore`. Not chosen as permanent in this document.
+Do not confuse hardware RAM, HUD `MemoryPanel`, and `MemoryStore`.
 
 ---
 
 ## 11. Research architecture
 
-Research is a **capability**, not a HUD panel and not “whatever the LLM says.”
+Research is a **capability** in Python Core. Networked fetch is a **host-mediated** permissioned action when it leaves the machine.
 
 ```text
-If Core cannot answer reliably OR information may be current
-  → Research capability
-  → source retrieval
+Uncertain or possibly stale
+  → Research
   → source verification
   → synthesis
-  → optional memory write (policy)
-  → response + citations/events to HUD
+  → optional memory
+  → response
 ```
 
-Networked research requires Security Gateway + network policy. Offline-first: local documents/index first. `WeatherPanel` / `DataStreamPanel` are **not** research.
-
-Never assume the LLM is correct or current.
+Never assume the LLM is correct or current. HUD weather/data panels are not research.
 
 ---
 
-## 12. Capability architecture
+## 12. Capability architecture (LOCKED)
 
-Registry-driven tools. Examples of **domains** (not a frozen list): computer, files, browser, coding, research, vision, voice, GitHub, automation, device management.
+Registry-driven domains (examples): computer, filesystem, browser, coding, research, GitHub, voice, vision, automation, device management.
 
-Each capability exposes:
-
-- unique capability ID
-- input schema
-- output schema
-- required permissions
-- risk level
-- device requirements
-- execution adapter
-- verification strategy
-
-Execution:
+Each capability: unique ID, input/output schema, required permissions, risk, device requirements, execution adapter, verification strategy.
 
 ```text
-Core requests capability
-  → Registry resolve
-  → Security Gateway
-  → Adapter (may use Device Gateway, MCP, or local code)
-  → Verify result
-  → Audit
+Python Core requests capability
+  → Registry
+  → Rust Security Gateway
+  → Rust Device Gateway / sandboxed adapter
+  → Verify + audit
+  → Result to Core
 ```
 
-MCP: allowed as **interop**, never as a backdoor around permissions, schemas, or audit.
+MCP: integration protocol only. **Must not bypass** the gateway. MCP must not be given a general OS handle.
 
 ---
 
-## 13. Device architecture
+## 13. Device architecture (LOCKED abstraction)
 
-Stable Device Gateway. Adapters isolate hardware and OS.
+Device Gateway lives in **Rust**. Hardware-specific logic stays in adapters.
 
-**Current device (this repo):** Windows laptop.
+**Current:** Windows laptop, sysinfo telemetry, CPAL microphone.
+
+**Future:** GPU upgrade, phone, Raspberry Pi, other devices.
 
 | Adapter | Today | Target |
 | --- | --- | --- |
-| Audio | CPAL default input, RMS | PCM pipeline + session control + permission |
-| Telemetry | sysinfo CPU, RAM, OS, uptime; `get_system_info` sleeps on the command thread | Background sampler; events; network/disk/battery as available |
-| Display | Tauri webview + R3F | Unchanged as a device; still not Core |
-
-**Future devices:** phone, Raspberry Pi, others — new adapters, same traits.
-
-`src/services/assistantEnvironment.ts` may hint “desktop vs browser” for presentation; it must not become a second Device Gateway.
+| Audio | CPAL RMS | PCM + session + permission |
+| Telemetry | Blocking `get_system_info` | Background events |
+| OS ops | Not present | Gateway-only |
+| Python supervisor | Absent | Spawn/auth/kill Core process (OPEN how) |
 
 ---
 
-## 14. Frontend (presentation) architecture
+## 14. Frontend (LOCKED)
 
-Stack: React, TypeScript, Vite, Three.js / React Three Fiber, Tauri 2 webview.
+Stack: React, TypeScript, Vite, Three.js / R3F, Tauri 2 webview.
 
-**May**
+May: display state/telemetry; non-privileged input; subscribe to events.
 
-- Display Core/device/visual state
-- Display telemetry
-- Accept non-privileged input (text, HUD clicks, theme toggle)
-- Subscribe to events
+Must not: orchestrate; privileged OS; model providers; secrets; mic lifecycle; bypass security; be memory; contact Python.
 
-**Must not**
-
-- Contain orchestration
-- Directly execute privileged OS operations
-- Contain model provider logic
-- Contain secrets
-- Own the microphone lifecycle
-- Bypass security
-- Become the memory system
-
-Visual systems (`visualState.ts`, `visualProfiles.ts`, theme manager) remain presentation. `assistantState` is UX. Keyboard 1–4 is a debug overlay, not intent detection.
-
-Prefer HUD data from `hudModel` filled by subscriptions, rather than `App.tsx` fetching and inventing mock metrics.
+`assistantState` is UX. Keyboard 1–4 is debug, not intent.
 
 ---
 
 ## 15. Event architecture
 
-Prefer events over polling for:
+Prefer events: telemetry, audio level, VAD, transcripts, core state, task progress, security prompts.
 
-- telemetry snapshots
-- audio level
-- VAD state
-- partial / final transcripts
-- core / assistant visual state
-- task progress
-- security events (prompt for confirmation, denials, audit notifications)
-
-Current debt: `App.tsx` intervals for sysinfo (2s) and mic level (120ms). Target: native emit → `tauriBridge` listen.
+Path: producer (host or Core via host) → Rust → HUD. Avoid `App.tsx` polling (2s sysinfo, 120ms mic today).
 
 ---
 
-## 16. Self-improvement lifecycle
-
-Controlled only. Never unrestricted self-modification.
+## 16. Self-improvement (LOCKED process)
 
 ```text
 Detect limitation
   → Research
-  → Improvement proposal
+  → Proposal
   → Isolated test
   → Benchmark
-  → Review / approval
+  → Approval
   → Deploy
   → Verify
-  → Rollback if necessary
+  → Rollback
 ```
 
-Security layer, permissions, and capability grants are **not** self-writable without controlled review. Proposals are artifacts; Core does not hot-patch itself in production without the pipeline above.
+Never unrestricted self-modification. Security controls are not self-writable without review. Isolated tests must **not** run with production Device Gateway privileges.
 
 ---
 
 ## 17. Development workflow
-
-Major changes:
 
 ```text
 Architecture / Research
@@ -501,57 +505,40 @@ Architecture / Research
   → Commit
 ```
 
-- No broad unrelated changes in a phase.
-- Preserve completed functionality unless intentionally replacing it.
-- Documentation-only work must not modify application source or dependencies.
-- Reuse-first (next section) before new subsystems.
+Documentation-only work must not modify application source or dependencies.
 
 ## 18. Reuse-first policy
 
-Before building a major subsystem:
+Inspect repo → search OSS → license → maintenance → Windows CPU 8 GB → resources → adapter → wrap → scratch only if needed.
 
-1. Inspect this repository
-2. Search mature open-source implementations
-3. Check license
-4. Check maintenance / activity
-5. Check platform compatibility (Windows CPU, 8 GB, no NVIDIA)
-6. Evaluate resource usage
-7. Define an adapter boundary
-8. Reuse / wrap / adapt
-9. Build from scratch only when necessary
+**Do not install** Ollama, llama.cpp, sherpa-onnx, vector databases, or a Python ML stack until:
 
-Candidates to **evaluate** (not lock): sherpa-onnx, whisper.cpp, Silero VAD, llama.cpp, Ollama, Piper / Kokoro-class TTS, SQLite + sqlite-vec / LanceDB. License and Tamil coverage remain evaluation items.
+1. IPC method allowlist is specified
+2. Capability schemas for the first tools exist
+3. Security Gateway deny-by-default behavior is specified
+4. Resource policy for 8 GB is specified
+
+Candidates to evaluate later (not lock): sherpa-onnx, whisper.cpp, Silero VAD, llama.cpp, Ollama, OpenAI-compatible local servers, Piper/Kokoro-class TTS, SQLite/vector, Mem0, MemPalace, LanceDB.
 
 ---
 
 ## 19. Resource policy
 
-Initial hardware: Windows, 8 GB RAM, no NVIDIA GPU, CPU-focused.
+**Current hardware:** Windows, 8 GB RAM, no NVIDIA GPU.
 
-Never assume powerful hardware.
+**Future:** GPU upgrade, phone, Raspberry Pi — via Device Gateway + Resource Manager, not Core rewrites.
 
-Model / Resource Manager must:
-
-- detect CPU / RAM / GPU / VRAM
-- avoid simultaneous heavy model loads (e.g. large STT + LLM)
-- unload / switch models when necessary
-- select models appropriate to remaining RAM
-
-Three.js `powerPreference: "high-performance"` in `NovaCoreScene` is a visual default; Core/STT/LLM must still respect the RAM budget.
+Never assume VRAM. Avoid simultaneous heavy STT + LLM loads. Unload/switch models. Three.js `high-performance` in `NovaCoreScene` does not override the RAM budget.
 
 ---
 
-## 20. Testing
+## 20. Testing (when implementation starts)
 
-Every native / core capability must eventually have:
-
-- unit tests where practical
-- integration tests where practical
-- failure-path tests
-- permission tests for privileged actions
-- performance / resource measurements for local AI
-
-The HUD may have lighter UI tests; it is not a substitute for Gateway/permission tests.
+- Unit / integration / failure paths
+- Permission tests for privileged actions
+- Contract tests: React↔Rust and Rust↔Python (version skew, auth failure, deny)
+- Proof that Python cannot call Device Gateway methods not in the allowlist
+- CPU/RAM measurements for local AI
 
 ---
 
@@ -559,109 +546,123 @@ The HUD may have lighter UI tests; it is not a substitute for Gateway/permission
 
 **Implemented (keep)**
 
-- React 19 + Vite HUD, Nova Core R3F visuals, theme (blue/orange)
-- UX assistant states: idle, listening, thinking, speaking, processing, error
-- Tauri 2 host, `tauriBridge` invokes
-- CPAL microphone stream + RMS
-- sysinfo CPU / memory / OS / uptime
-- STT / VoiceEngine **interfaces** and stub factory
-- IPC ACL file (`core:default` only)
+- React 19 + Vite HUD, Nova Core, theme
+- UX visual states
+- Tauri 2 + `tauriBridge`
+- CPAL RMS + sysinfo
+- Voice/STT **interfaces** (stub)
+- Tauri `core:default` ACL
 
 **Partial**
 
-- Device Gateway (inlined sysinfo + CPAL, no traits)
-- Voice (meter live; STT unwired; samples dropped)
-- HUD model types vs live App wiring
-- SpeakingCore / MemoryPanel / ProjectPanel unused
-- Security (template ACL, `csp: null`, mic auto-start)
+- Device Gateway (inlined, no traits)
+- Voice meter only
+- Security (template ACL, `csp: null`, auto-start mic)
 
 **Missing**
 
-- JARVIS Core, intent/planning, memory, research, model manager
-- Capability Registry, runtime Security Gateway
-- Real STT/VAD/TTS/LLM, wake word
+- Python AI Core
+- Host↔Core IPC
+- Orchestrator, memory, research, model manager
+- Capability Registry + Rust Security Gateway
+- Real STT/VAD/TTS/LLM
 - Event bus, multi-device adapters
-- Tests for native privileged paths
 
-**Conflicts / debt (documented, not fixed here)**
+**Debt (not fixed in this documentation pass)**
 
-- `App.tsx` god-object: polling, mic lifecycle, mock HUD copy
-- Two visual profile modules
-- Two VoiceEngine event shapes
-- `jarvis_ping` is not Core
+- `App.tsx` polling and mic ownership
+- Dual visual profile modules / VoiceEngine event shapes
+- `jarvis_ping` ≠ Core
 - Bundle id `com.tauri.dev`
-- Mock neural/data/task metrics vs stub STT
 
 ---
 
-## 22. Future phases (implementation order)
+## 22. Proposed implementation order
 
-Order is architectural, not a schedule. Each phase should preserve prior functionality.
+Establish **architecture and boundaries before heavy AI runtimes**.
 
-1. Freeze boundaries (this document + `AGENTS.md`).
-2. Harden host: identity, CSP, mic not auto-started, telemetry as background events.
-3. Audio Device Gateway: PCM 16 kHz tap + level events; HUD subscribes.
-4. VAD adapter (Silero behind interface); listening state from VAD.
-5. `SttProvider` adapter #1 (evaluate sherpa-onnx); transcripts → Core inbox + HUD. whisper.cpp as adapter #2, same trait.
-6. Text input into the same inbox.
-7. Orchestrator skeleton + Capability Registry + Security Gateway (first tool: read telemetry).
-8. Model / Resource Manager (load policy for 8 GB).
-9. Local LLM `ModelProvider` (llama.cpp / Ollama as replaceable candidates).
-10. Memory store; then Research capability.
-11. TTS; then wake word.
-12. Additional Device Gateway adapters (phone, Raspberry Pi).
+1. **Docs freeze** (this document + `AGENTS.md`) — current step.
+2. **Contract design only:** Host↔Core IPC version, auth sketch, method allowlist, capability schema template, event list. Still no Python install required if contracts stay in docs.
+3. **Harden Rust host (no AI):** bundle id, CSP, mic not auto-started, telemetry as events, Tauri ACL for existing commands.
+4. **Device Gateway traits** around existing CPAL + sysinfo (still no STT/LLM packages).
+5. **Security Gateway skeleton** in Rust: deny-by-default, audit stub, confirm hook for high risk. First allowed action: read telemetry.
+6. **Python Core process skeleton** (minimal interpreter, hello/health over IPC). **No** model download, **no** OS adapters in Python.
+7. **End-to-end text path:** HUD text → Rust → Python echo/plan stub → HUD events. Prove React cannot reach Python.
+8. **Audio events:** PCM tap + level/VAD events in host; HUD subscribes.
+9. **SttProvider adapter** (evaluate sherpa-onnx / whisper.cpp); transcripts into Core inbox. Replaceable config.
+10. **Capability Registry** wired to Gateway (filesystem/browser/etc. still denied until explicitly allowed).
+11. **Model Manager + Resource Manager** then first `ModelProvider` (Ollama / llama.cpp / OpenAI-compatible — chosen in config, not code constants).
+12. **MemoryStore** adapter; then Research capability (network via host).
+13. **TtsProvider**; then wake word.
+14. **More devices** (GPU, phone, Raspberry Pi adapters).
 
-Do not start with HUD rewrites, cloud APIs, or webview ONNX.
+Do not start with HUD rewrites, cloud APIs, webview ONNX, or unrestricted Python `subprocess` to the shell.
 
 ---
 
-## 23. Locked architectural decisions
+## 23. Locked decisions
 
-These are **locked** unless a deliberate architecture revision updates this document:
+1. React / Three.js is **presentation only**.
+2. Cognition is **not** in `App.tsx` and **not** `jarvis_ping`.
+3. Privileged / OS / device operations are **protected** and execute only after Capability Registry + Security Gateway + Device Gateway.
+4. Python AI Core **must not** have unrestricted OS access.
+5. Modular, provider-independent design: interfaces, adapters, config, registries.
+6. **No hardcoded** providers, models, model filenames, databases, tools, hardware, secrets, absolute paths, or cloud requirements.
+7. **Security gateway** is mandatory (defense in depth as in §7).
+8. **Capability registry** is mandatory; Tauri ACL ≠ registry.
+9. **Device abstraction** is mandatory; hardware-specific code in adapters.
+10. Voice: CPAL → PCM → VAD → `SttProvider` → Core; **no** webview audio/STT inference; **no** SpeechRecognition.
+11. TTS behind `TtsProvider`; memory behind `MemoryStore`.
+12. MCP must not bypass the permission gateway.
+13. React must not speak to Python except through Rust.
+14. Events preferred over HUD polling.
+15. Memory is typed and policy-gated — not “save everything.”
+16. Research is a capability; LLMs are not assumed current.
+17. Deny-by-default; high-risk needs confirmation/authn; no silent self-privilege.
+18. Self-improvement: proposal → isolated test → approval → deploy → verify → rollback. Never unrestricted self-modification.
+19. Reuse mature OSS behind adapters.
+20. Initial envelope: Windows, 8 GB RAM, no NVIDIA; Resource Manager required for local AI.
+21. Offline-first; network is permissioned.
+22. Architecture/IPC/security boundaries **before** installing heavy AI runtimes.
+23. Preserve working HUD/native capture unless intentionally replacing it.
 
-1. HUD / React is presentation only. Cognition and privileged ops are native Core + gateways.
-2. Core is not `App.tsx` and not `jarvis_ping`.
-3. All major subsystems are replaceable (traits, adapters, config, registries).
-4. No hardcoded LLM/STT/TTS/database/tool/hardware/cloud/secrets/absolute paths/permissions.
-5. Voice: native CPAL → PCM → VAD → `SttProvider` → text → Core. No webview STT/audio inference. No browser SpeechRecognition.
-6. Tauri ACL ≠ JARVIS Capability Registry.
-7. MCP cannot bypass Security Gateway.
-8. Events preferred over HUD polling for telemetry/audio/STT/core/security.
-9. Memory is native, typed, and policy-gated — not “save everything.”
-10. Research is a capability with verification; the LLM is not assumed current.
-11. Device-specific code stays in adapters.
-12. Deny-by-default security; high-risk actions need confirmation/authn; no silent self-privilege.
-13. Self-improvement follows proposal → isolated test → approval → deploy → verify → rollback.
-14. Reuse mature OSS behind adapters; do not rebuild whisper / Silero / llama stacks.
-15. Initial resource envelope: Windows, 8 GB RAM, no NVIDIA; Resource Manager is mandatory for local AI.
-16. Offline-first default; network is a permissioned policy.
-17. Preserve working HUD/native capture when adding Core; replace intentionally, not accidentally.
+## 24. Provisional decisions
 
-## 24. Intentionally open decisions
+These are the **current hybrid choice**, not eternal locks:
+
+1. **Rust / Tauri** is the native host (Device Gateway, telemetry, OS ops, security boundary, authn/authz, sandbox, secure IPC, future device adapters).
+2. **Python** is the AI Core (orchestrator, intent, planning, model manager/router, LLM adapters, memory, research, agent/tool orchestration, MCP client).
+3. **Rust ↔ Python** communication is a **versioned, authenticated, least-privilege IPC** boundary supervised by the host.
+4. Capability **catalog/orchestration** may live in Python; **authorization and privileged execution** live in Rust.
+
+A future revision may move Core (for example fully into Rust) only by updating these documents. Until then, agents must not implement Core inside React “to go faster.”
+
+## 25. Intentionally open decisions
 
 Do **not** treat these as chosen:
 
-- Default STT engine (sherpa-onnx vs whisper.cpp vs other) after evaluation
-- Default VAD packaging (sherpa-bundled Silero vs standalone ONNX)
-- Default LLM runtime (llama.cpp vs Ollama vs other) and default model family/size
-- Default TTS (Kokoro, Piper, other) and Tamil coverage
-- Default memory engine (SQLite, sqlite-vec, LanceDB, other)
-- Whether Core is in-process in the Tauri binary or a later sidecar process
-- Exact capability ID taxonomy and first production tool set
-- Authn mechanism (local user session, OS Hello, etc.)
-- MCP adoption timeline
+- Exact **Python runtime / packaging** (venv, embedded interpreter, sidecar exe, conda, etc.)
+- Exact **IPC protocol** (stdin/stdout JSON, named pipe, local socket, gRPC, protobuf, …)
+- Exact **STT** implementation (sherpa-onnx vs whisper.cpp vs other)
+- Exact **VAD** packaging
+- Exact **LLM runtime** (Ollama vs llama.cpp vs OpenAI-compatible vs other) and model identity
+- Exact **memory backend** (SQLite/vector, Mem0, MemPalace, LanceDB, other)
+- Exact **TTS** backend
+- Exact **orchestration framework** (custom vs a library)
+- Where VAD/STT **process** runs (host vs helper), provided it is not the webview
+- Authn mechanism (OS session, local credential, …)
+- MCP adoption timeline and which servers
 - Wake-word engine
-- Multi-process isolation for ONNX/LLM
 - Whether a browser-only demo remains supported
-- Visual consolidation of `visualState.ts` vs `visualProfiles.ts` (presentation refactor, not Core)
+- Visual consolidation of `visualState.ts` vs `visualProfiles.ts`
 
-When an open item is decided, record it here as a **replaceable default in config**, never as an unreplaceable constant in Core or React.
+When an open item is decided, record it as a **replaceable default in config**, never as an unreplaceable constant.
 
 ---
 
-## 25. Document control
+## 26. Document control
 
 - **This file** is the system blueprint.
 - **`AGENTS.md`** is the short rule set for agents.
-- Application source was not modified to create these documents.
-- If implementation must diverge, update this blueprint in the same change set as the architecture decision — do not silently fork the design in code.
+- Application source, dependencies, and runtime Core were **not** modified for this hybrid update.
+- If implementation diverges, update this blueprint in the same change set as the architecture decision.
