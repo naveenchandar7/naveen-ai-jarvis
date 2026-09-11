@@ -23,7 +23,7 @@ This repository currently contains a **desktop HUD shell** (React + Vite + Three
 | Class | Meaning |
 | --- | --- |
 | **LOCKED** | Must not be violated. Change only by explicit architecture revision of this file and the master blueprint. |
-| **PROVISIONAL** | Current hybrid split (Rust host + Python AI Core + IPC). Preferred now; not a forever commitment. |
+| **PROVISIONAL** | A non-invariant implementation decision. It may change only behind the locked boundaries. |
 | **OPEN** | Must not be hardcoded. Decide later behind interfaces. |
 
 ## LOCKED split
@@ -32,7 +32,7 @@ This repository currently contains a **desktop HUD shell** (React + Vite + Three
 | --- | --- | --- | --- |
 | Presentation | `src/` React HUD + R3F | Display state, accept non-privileged input, subscribe to events | Orchestrate, infer, store secrets, own privileged OS work, talk to Python Core directly |
 | Privileged native | Rust / Tauri host | Device I/O, OS ops, security gateway, authn/authz, sandbox, secure IPC | Leak unrestricted OS access to Python or the webview |
-| Cognition | JARVIS AI Core (see provisional) | Orchestrate, plan, route models, memory, research, request capabilities | Execute privileged OS operations itself |
+| Cognition | Python JARVIS AI Core | Orchestrate, plan, route models, memory, research, request capabilities | Execute privileged OS operations itself |
 
 **Cognition and privileged operations must not be implemented inside React UI components.**
 
@@ -42,24 +42,26 @@ Privileged path (locked):
 
 `AI Core → Capability Registry → Security / Permission Gateway → Rust Device Gateway → Device / OS`
 
-## PROVISIONAL hybrid (current architecture choice)
+## LOCKED hybrid architecture
 
 ```text
-React / Three.js     → presentation client only
-Rust / Tauri         → native host, Device Gateway, telemetry, OS ops, security
-Python AI Core       → orchestrator, intent, planning, models, memory, research, MCP
+React / Three.js     → presentation client only: render state/events and accept non-privileged input
+Rust / Tauri         → native host, Device Gateway, CPAL/device access, telemetry, privileged OS/device work, Security / Permission Gateway, authn/authz, sandbox/isolation, secure IPC, future device adapters
+Python JARVIS AI Core → orchestrator, intent, planning, model router/providers, memory/research orchestration, AI-side capability catalog, MCP and future AI/agent integrations
 ```
 
-Communication (provisional):
+Communication (LOCKED boundary):
 
 ```text
 React  ↔  Rust host          (Tauri IPC; existing tauriBridge pattern)
-Rust host  ↔  Python AI Core (versioned, authenticated, least-privilege IPC)
+Rust host  ↔  Python AI Core (versioned, authenticated, least-privilege IPC with explicit message contracts)
 ```
 
 The webview must never open a private channel to Python that bypasses the Rust host.
 
-Exact Python packaging, exact IPC protocol, and exact process layout remain **OPEN**.
+Python may request capabilities only. It must never receive unrestricted OS/device access; privileged execution always follows `AI Core → Capability Request → Security / Permission Gateway → Rust Device Gateway → Native OS / Device → Result → AI Core`.
+
+Exact Python runtime/packaging, IPC protocol, and process layout remain **OPEN**.
 
 ## Replaceability (LOCKED)
 
@@ -95,8 +97,8 @@ Keep existing modules in their roles. Do not put Core logic in the HUD. Do not g
 
 **Native host (evolve as Device Gateway + security boundary)**
 
-- Commands: `src-tauri/src/lib.rs` (`jarvis_ping`, `get_system_info`, mic start/stop/level)
-- Audio capture: `src-tauri/src/audio.rs` (CPAL)
+- Host telemetry and approved commands: `src-tauri/src/lib.rs`
+- Audio adapter: `src-tauri/src/audio.rs` (CPAL; no webview-owned capture lifecycle)
 - IPC ACL (not the capability registry): `src-tauri/capabilities/default.json`
 
 **Voice contracts (keep; do not fill with webview STT)**
@@ -107,7 +109,7 @@ Keep existing modules in their roles. Do not put Core logic in the HUD. Do not g
 - `src/services/voice/stt/sttProvider.ts` (factory only)
 - `src/services/voice/voiceController.ts` (not wired from `App.tsx` yet)
 
-Do not place JARVIS Core in `src/App.tsx`. Do not treat `jarvis_ping` as Core.
+Do not place JARVIS Core in `src/App.tsx`. Host health or telemetry is not Core.
 
 ## Voice rules (LOCKED pipeline; OPEN engines)
 
@@ -118,7 +120,7 @@ Native audio stays **outside the webview**:
 - Do **not** put audio buffers or STT inference in the webview.
 - Do **not** use browser `SpeechRecognition`.
 - Do **not** treat HUD RMS gating in `VoicePanel` as VAD.
-- The UI must **not** own microphone lifecycle (`App.tsx` currently starts CPAL on mount; that is debt).
+- The UI must **not** own microphone lifecycle or start native capture automatically.
 - Prefer events over polling.
 
 STT candidates (replaceable, not locked): **sherpa-onnx**, **whisper.cpp**. VAD candidate: **Silero**. TTS must use a **TtsProvider** abstraction. Exact engines remain **OPEN**.

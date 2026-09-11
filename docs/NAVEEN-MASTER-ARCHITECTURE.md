@@ -4,7 +4,7 @@ Permanent system blueprint for NAVEEN / JARVIS: a long-term **standalone persona
 
 Agent-facing engineering rules: [`../AGENTS.md`](../AGENTS.md).
 
-This document describes the **target architecture**, a **provisional hybrid runtime split**, maps both onto the **current repository**, and records **locked / provisional / open** decisions. It does not choose a permanent LLM, STT, TTS, database, IPC protocol, Python packager, or cloud vendor.
+This document describes the **locked hybrid architecture**, maps it onto the **current repository**, and records **locked / provisional / open** decisions. It does not choose a permanent LLM, STT, TTS, database, IPC protocol, Python packager, or cloud vendor.
 
 **Status:** documentation and architecture planning only. No Python Core, Device Gateway traits, or host↔core IPC exist in the codebase yet.
 
@@ -15,7 +15,7 @@ This document describes the **target architecture**, a **provisional hybrid runt
 | Class | Meaning |
 | --- | --- |
 | **LOCKED** | Invariants. Violating them is an architecture bug. Change only by revising this document and `AGENTS.md`. |
-| **PROVISIONAL** | The hybrid split chosen now: React presentation, Rust/Tauri native host, Python AI Core, secured IPC. Preferred for the next implementation phases; may be revised with an explicit architecture update. |
+| **PROVISIONAL** | A non-invariant implementation choice that may change only behind the locked architecture boundaries. |
 | **INTENTIONALLY OPEN** | Must remain behind interfaces. Do not hardcode a winner in Core, host, or UI. |
 
 ---
@@ -71,12 +71,14 @@ AI Core
   → Device / OS
 ```
 
-### 3.2 Provisional hybrid runtime
+### 3.2 Locked hybrid runtime
 
 ```text
-React / Three.js     presentation client only
+React / Three.js     presentation layer only
+                     renders state and events
+                     accepts non-privileged user input
         ↕  Tauri IPC (existing webview ↔ host pattern)
-Rust / Tauri         native host
+Rust / Tauri         native application host
                      Device Gateway
                      CPAL / audio device access
                      system telemetry
@@ -88,7 +90,7 @@ Rust / Tauri         native host
                      secure IPC
                      future device adapters
         ↕  versioned, authenticated, least-privilege IPC
-Python AI Core       JARVIS Orchestrator
+Python JARVIS AI Core JARVIS Orchestrator
                      intent understanding
                      planning
                      model manager / router
@@ -103,7 +105,7 @@ Python AI Core       JARVIS Orchestrator
 flowchart TB
   User[User]
   HUD[React Three.js HUD]
-  subgraph rustHost [Rust Tauri native host PROVISIONAL]
+  subgraph rustHost [Rust Tauri native host LOCKED]
     TauriIPC[Secure webview IPC]
     Sec[Security Permission Gateway]
     Dev[Device Gateway]
@@ -111,7 +113,7 @@ flowchart TB
     Tele[sysinfo telemetry]
     OsOps[OS native operations]
   end
-  subgraph pyCore [Python AI Core PROVISIONAL]
+  subgraph pyCore [Python JARVIS AI Core LOCKED]
     Orch[Orchestrator]
     Intent[Intent plus Planning]
     Models[Model Manager]
@@ -151,16 +153,16 @@ flowchart TB
 
 **LOCKED:** Python Core does not receive unrestricted OS access. It **requests** capabilities; the Rust host **authorizes and executes** device/OS work.
 
-**PROVISIONAL:** cognition in Python; privileged native work in Rust; IPC between them.
+**LOCKED:** cognition lives in the Python JARVIS AI Core; privileged native work, security enforcement, Device Gateway operations, and the secure IPC boundary live in Rust/Tauri.
 
 **OPEN:** how Python is packaged, which IPC protocol is used, whether Core is one process or several.
 
-### 3.3 Communication rules (PROVISIONAL mechanism, LOCKED policy)
+### 3.3 Communication rules (LOCKED boundary; OPEN wire protocol)
 
 | Hop | Mechanism today | Target policy |
 | --- | --- | --- |
 | React ↔ Rust | `@tauri-apps/api` `invoke` in `src/services/native/tauriBridge.ts` | Keep; prefer events; Tauri ACL + CSP |
-| Rust ↔ Python | **Not implemented** | Versioned schema, authenticated, least privilege, deny-by-default methods |
+| Rust ↔ Python | **Not implemented** | Versioned, authenticated, least-privilege IPC with explicit message contracts and deny-by-default methods |
 | React ↔ Python | **Forbidden** | No direct socket, stdio, or HTTP from the webview to Core |
 
 IPC to Python exposes **capability request APIs and cognitive events**, not raw `shell`, arbitrary FS, or an always-on microphone tap.
@@ -169,7 +171,7 @@ IPC to Python exposes **capability request APIs and cognitive events**, not raw 
 
 ## 4. Layer responsibilities
 
-| Layer | Runtime (provisional) | Responsibility |
+| Layer | Runtime (locked) | Responsibility |
 | --- | --- | --- |
 | **Presentation** | React / R3F | Display; non-privileged input; subscribe to events |
 | **Input Gateway** | Host captures audio; Core consumes text events | Normalize voice/text/gesture into one Core inbox |
@@ -190,7 +192,7 @@ Tauri ACL remains a **webview IPC allowlist**. It is not the JARVIS Capability R
 
 | Path | Role today | Target role |
 | --- | --- | --- |
-| `src/App.tsx` | HUD; polls telemetry; **starts microphone** | Presentation only; subscribe to host events |
+| `src/App.tsx` | HUD; takes one telemetry snapshot and subscribes to host events | Presentation only |
 | `src/components/hud/` | Glass HUD | Dumb views |
 | `src/components/core/` | Nova Core visuals | Visual engine |
 | `src/config/theme*.ts`, `visualState.ts`, `visualProfiles.ts` | Theme / visuals | Presentation |
@@ -199,10 +201,10 @@ Tauri ACL remains a **webview IPC allowlist**. It is not the JARVIS Capability R
 | `src/state/assistantState.ts` | UX state | Map from core/host events |
 | `src/services/native/tauriBridge.ts` | React → Rust `invoke` | Only React↔Rust client |
 | `src/services/voice/*` | STT interfaces; stub factory; unwired controller | HUD/host event types; no webview inference |
-| `src-tauri/src/lib.rs` | ping, sysinfo, mic commands | Native host + Device Gateway + security + Python IPC supervisor |
-| `src-tauri/src/audio.rs` | CPAL RMS; PCM dropped | Audio adapter (PCM → VAD → STT) |
-| `src-tauri/capabilities/default.json` | `core:default` | Webview ACL only |
-| Python AI Core | **Absent** | Provisional cognition process |
+| `src-tauri/src/lib.rs` | system telemetry event + snapshot command | Native host + Device Gateway + security + Python IPC supervisor |
+| `src-tauri/src/audio.rs` | CPAL adapter retained; capture has no webview lifecycle command | Audio adapter (PCM → VAD → STT) |
+| `src-tauri/capabilities/default.json` | explicit event listen/unlisten ACL | Webview IPC allowlist only |
+| Python JARVIS AI Core | **Absent** | Locked cognition runtime |
 | Host↔Core IPC | **Absent** | Versioned authenticated bus |
 
 ---
@@ -270,9 +272,8 @@ See [§8](#8-voice-pipeline).
 ### 6.3 Current (as implemented)
 
 ```text
-Mic → CPAL → RMS → JS poll 120ms → VoicePanel
-sysinfo → JS poll 2s → SystemPanel
-jarvis_ping → "CORE_ONLINE"  (not Core)
+Mic capture → disabled until a host-controlled voice session exists
+sysinfo → Rust host telemetry event → HUD subscription
 STT stub → no-op
 Python Core → absent
 Rust ↔ Python IPC → absent
@@ -373,7 +374,7 @@ Tamil, English, mixed Tamil–English via **config**, not hardcoded model IDs.
 
 ```text
 Task
-  → ModelRouter / Model Manager     (Python, provisional)
+  → ModelRouter / Model Manager     (Python JARVIS AI Core, locked)
   → ModelProvider adapter
        Ollama
        llama.cpp
@@ -468,7 +469,7 @@ Must not: orchestrate; privileged OS; model providers; secrets; mic lifecycle; b
 
 Prefer events: telemetry, audio level, VAD, transcripts, core state, task progress, security prompts.
 
-Path: producer (host or Core via host) → Rust → HUD. Avoid `App.tsx` polling (2s sysinfo, 120ms mic today).
+Path: producer (host or Core via host) → Rust → HUD. Keep telemetry and audio updates host-produced; avoid frontend polling.
 
 ---
 
@@ -549,15 +550,15 @@ Never assume VRAM. Avoid simultaneous heavy STT + LLM loads. Unload/switch model
 - React 19 + Vite HUD, Nova Core, theme
 - UX visual states
 - Tauri 2 + `tauriBridge`
-- CPAL RMS + sysinfo
+- Rust host telemetry events and hardened Tauri ACL/CSP
 - Voice/STT **interfaces** (stub)
-- Tauri `core:default` ACL
+- Explicit Tauri event-listen/unlisten ACL
 
 **Partial**
 
 - Device Gateway (inlined, no traits)
-- Voice meter only
-- Security (template ACL, `csp: null`, auto-start mic)
+- CPAL adapter retained; host-controlled voice session not yet implemented
+- Security Gateway (host hardening complete; policy gateway not yet implemented)
 
 **Missing**
 
@@ -570,31 +571,31 @@ Never assume VRAM. Avoid simultaneous heavy STT + LLM loads. Unload/switch model
 
 **Debt (not fixed in this documentation pass)**
 
-- `App.tsx` polling and mic ownership
 - Dual visual profile modules / VoiceEngine event shapes
-- `jarvis_ping` ≠ Core
-- Bundle id `com.tauri.dev`
+- Generic bundled icon assets remain to be replaced in a branding task
 
 ---
 
 ## 22. Proposed implementation order
 
-Establish **architecture and boundaries before heavy AI runtimes**.
+Implement the locked architecture in this order; provider choices remain replaceable.
 
-1. **Docs freeze** (this document + `AGENTS.md`) — current step.
-2. **Contract design only:** Host↔Core IPC version, auth sketch, method allowlist, capability schema template, event list. Still no Python install required if contracts stay in docs.
-3. **Harden Rust host (no AI):** bundle id, CSP, mic not auto-started, telemetry as events, Tauri ACL for existing commands.
-4. **Device Gateway traits** around existing CPAL + sysinfo (still no STT/LLM packages).
-5. **Security Gateway skeleton** in Rust: deny-by-default, audit stub, confirm hook for high risk. First allowed action: read telemetry.
-6. **Python Core process skeleton** (minimal interpreter, hello/health over IPC). **No** model download, **no** OS adapters in Python.
-7. **End-to-end text path:** HUD text → Rust → Python echo/plan stub → HUD events. Prove React cannot reach Python.
-8. **Audio events:** PCM tap + level/VAD events in host; HUD subscribes.
-9. **SttProvider adapter** (evaluate sherpa-onnx / whisper.cpp); transcripts into Core inbox. Replaceable config.
-10. **Capability Registry** wired to Gateway (filesystem/browser/etc. still denied until explicitly allowed).
-11. **Model Manager + Resource Manager** then first `ModelProvider` (Ollama / llama.cpp / OpenAI-compatible — chosen in config, not code constants).
-12. **MemoryStore** adapter; then Research capability (network via host).
-13. **TtsProvider**; then wake word.
-14. **More devices** (GPU, phone, Raspberry Pi adapters).
+1. **Host/security hardening** — Tauri identity, CSP, narrow ACL, host telemetry events, and no webview microphone lifecycle.
+2. **Device Gateway** — Rust traits/adapters around telemetry, audio, and future privileged device/OS operations.
+3. **Native audio event pipeline** — host-owned CPAL session, bounded level/status events, and no PCM in the webview.
+4. **VAD** — evaluate and integrate behind a replaceable `VadProvider` boundary.
+5. **STT evaluation/integration** — select a replaceable `SttProvider` only after resource, language, and security evaluation.
+6. **Python JARVIS AI Core skeleton** — minimal orchestrator process with no unrestricted OS adapters and no model download.
+7. **Secure Rust ↔ Python IPC** — versioned contracts, authentication, least privilege, explicit allowlist, failure handling, and audit boundary.
+8. **Model Manager / LLM provider** — Resource Manager plus a configurable `ModelProvider` adapter.
+9. **TTS** — a replaceable `TtsProvider` behind the host/security boundary.
+10. **Capability Registry** — schemas, risk/permission metadata, verification, and Rust gateway enforcement.
+11. **Memory** — policy-gated `MemoryStore` behind a replaceable backend.
+12. **Research** — a permissioned, host-mediated research capability with source verification.
+13. **Computer/files/browser/developer capabilities** — explicit registry entries, confirmation policy, sandboxing, audit, and verification.
+14. **Automation** — policy-governed automation capabilities only after the preceding security controls are proven.
+15. **Phone/future device gateway** — Rust Device Gateway adapters for phone, GPU, Raspberry Pi, and future hardware.
+16. **Controlled self-improvement** — proposal, isolated test, benchmark, approval, deployment, verification, and rollback.
 
 Do not start with HUD rewrites, cloud APIs, webview ONNX, or unrestricted Python `subprocess` to the shell.
 
@@ -603,7 +604,7 @@ Do not start with HUD rewrites, cloud APIs, webview ONNX, or unrestricted Python
 ## 23. Locked decisions
 
 1. React / Three.js is **presentation only**.
-2. Cognition is **not** in `App.tsx` and **not** `jarvis_ping`.
+2. Cognition is **not** in `App.tsx` or any host telemetry/health signal.
 3. Privileged / OS / device operations are **protected** and execute only after Capability Registry + Security Gateway + Device Gateway.
 4. Python AI Core **must not** have unrestricted OS access.
 5. Modular, provider-independent design: interfaces, adapters, config, registries.
@@ -624,34 +625,36 @@ Do not start with HUD rewrites, cloud APIs, webview ONNX, or unrestricted Python
 20. Initial envelope: Windows, 8 GB RAM, no NVIDIA; Resource Manager required for local AI.
 21. Offline-first; network is permissioned.
 22. Architecture/IPC/security boundaries **before** installing heavy AI runtimes.
-23. Preserve working HUD/native capture unless intentionally replacing it.
+23. Preserve working HUD/native capture boundaries unless intentionally replacing them.
 
-## 24. Provisional decisions
+## 24. Locked hybrid architecture decision
 
-These are the **current hybrid choice**, not eternal locks:
+The following architectural decisions are **LOCKED**:
 
-1. **Rust / Tauri** is the native host (Device Gateway, telemetry, OS ops, security boundary, authn/authz, sandbox, secure IPC, future device adapters).
-2. **Python** is the AI Core (orchestrator, intent, planning, model manager/router, LLM adapters, memory, research, agent/tool orchestration, MCP client).
-3. **Rust ↔ Python** communication is a **versioned, authenticated, least-privilege IPC** boundary supervised by the host.
-4. Capability **catalog/orchestration** may live in Python; **authorization and privileged execution** live in Rust.
-
-A future revision may move Core (for example fully into Rust) only by updating these documents. Until then, agents must not implement Core inside React “to go faster.”
+1. React / Three.js is presentation-only: it renders state/events and accepts non-privileged input. It must not contain cognition, model logic, memory, research, privileged OS control, or secrets.
+2. Rust / Tauri is the native application host, Device Gateway, native audio/device access layer, CPAL capture owner, telemetry provider, privileged OS/device executor, Security / Permission Gateway, authentication/authorization enforcement point, sandbox/isolation boundary, secure IPC boundary, and home for future device adapters.
+3. Python JARVIS AI Core owns orchestration, intent understanding, planning, model management/routing, replaceable LLM adapters, memory and research orchestration, the AI-side capability catalog, MCP integrations where appropriate, and future AI/agent ecosystem integrations.
+4. Rust ↔ Python communication is versioned, authenticated, least-privilege IPC with explicit message contracts. The exact wire protocol and packaging remain open.
+5. Privileged execution is always: `AI Core → Capability Request → Security / Permission Gateway → Rust Device Gateway → Native OS / Device → Result → AI Core`.
+6. Python must never directly perform unrestricted privileged OS/device operations. Capability authorization and privileged execution remain in Rust.
+7. Providers and implementations remain replaceable behind interfaces, adapters, configuration, registries, and routers. No model, provider, runtime, memory backend, or MCP implementation is permanent.
+8. MCP cannot bypass the Security / Permission Gateway. Unrestricted AI self-modification is forbidden.
 
 ## 25. Intentionally open decisions
 
 Do **not** treat these as chosen:
 
-- Exact **Python runtime / packaging** (venv, embedded interpreter, sidecar exe, conda, etc.)
+- Exact **Python runtime** and **packaging/distribution mechanism** (venv, embedded interpreter, sidecar exe, conda, etc.)
 - Exact **IPC protocol** (stdin/stdout JSON, named pipe, local socket, gRPC, protobuf, …)
 - Exact **STT** implementation (sherpa-onnx vs whisper.cpp vs other)
-- Exact **VAD** packaging
+- Exact **VAD** provider and packaging
 - Exact **LLM runtime** (Ollama vs llama.cpp vs OpenAI-compatible vs other) and model identity
 - Exact **memory backend** (SQLite/vector, Mem0, MemPalace, LanceDB, other)
 - Exact **TTS** backend
 - Exact **orchestration framework** (custom vs a library)
 - Where VAD/STT **process** runs (host vs helper), provided it is not the webview
 - Authn mechanism (OS session, local credential, …)
-- MCP adoption timeline and which servers
+- Exact **MCP implementation strategy**, adoption timeline, and which servers
 - Wake-word engine
 - Whether a browser-only demo remains supported
 - Visual consolidation of `visualState.ts` vs `visualProfiles.ts`
