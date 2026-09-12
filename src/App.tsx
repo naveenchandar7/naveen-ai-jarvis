@@ -8,11 +8,8 @@ import { useAssistantState } from "./hooks/useAssistantState";
 import { useAssistantKeyboard } from "./hooks/useAssistantKeyboard";
 
 import {
-  pingJarvisCore,
   getSystemInfo,
-  startMicrophone,
-  stopMicrophone,
-  getMicrophoneLevel,
+  subscribeToSystemTelemetry,
 } from "./services/native/tauriBridge";
 
 import type { SystemInfo } from "./services/native/tauriBridge";
@@ -86,13 +83,11 @@ function App() {
     null,
   );
 
-  const [
-    micLevel,
-    setMicLevel,
-  ] = useState(0);
-
   useEffect(() => {
     let mounted = true;
+    let unlisten:
+      | (() => void)
+      | undefined;
 
     const updateSystemInfo =
       async () => {
@@ -105,74 +100,32 @@ function App() {
           }
         } catch (error) {
           console.error(
-            "JARVIS SYSTEM INFO ERROR:",
+            "NAVEEN HOST SYSTEM INFO ERROR:",
             error,
           );
         }
       };
 
-    const updateMicLevel =
-      async () => {
-        try {
-          const level =
-            await getMicrophoneLevel();
-
-          if (mounted) {
-            setMicLevel(level);
-          }
-        } catch {
-          /*
-           * Mic may briefly disappear during
-           * development hot reload. Don't spam
-           * the console every polling cycle.
-           */
-        }
-      };
-
-    pingJarvisCore()
-      .then((response) => {
-        console.log(
-          "JARVIS CORE:",
-          response,
-        );
-      })
-      .catch((error) => {
-        console.error(
-          "JARVIS CORE ERROR:",
-          error,
-        );
-      });
-
     updateSystemInfo();
-    updateMicLevel();
 
-    const systemInterval =
-      window.setInterval(
-        updateSystemInfo,
-        2000,
-      );
+    void subscribeToSystemTelemetry(
+      (info) => {
+        if (mounted) {
+          setSystemInfo(info);
+        }
+      },
+    )
+      .then((nextUnlisten) => {
+        if (mounted) {
+          unlisten = nextUnlisten;
+          return;
+        }
 
-    /*
-     * 120ms is enough for a responsive
-     * voice meter without hammering the
-     * Tauri bridge every animation frame.
-     */
-    const microphoneInterval =
-      window.setInterval(
-        updateMicLevel,
-        120,
-      );
-
-    startMicrophone()
-      .then((response) => {
-        console.log(
-          "JARVIS MIC:",
-          response,
-        );
+        void nextUnlisten();
       })
       .catch((error) => {
         console.error(
-          "JARVIS MIC ERROR:",
+          "NAVEEN HOST TELEMETRY ERROR:",
           error,
         );
       });
@@ -180,18 +133,7 @@ function App() {
     return () => {
       mounted = false;
 
-      window.clearInterval(
-        systemInterval,
-      );
-
-      window.clearInterval(
-        microphoneInterval,
-      );
-
-      void stopMicrophone()
-        .catch(() => {
-          // Ignore cleanup errors.
-        });
+      void unlisten?.();
     };
   }, []);
 
@@ -212,9 +154,6 @@ function App() {
       assistantState
     ];
 
-  const micIsActive =
-    micLevel > 0.028;
-
   const voiceStatus =
     assistantState === "speaking"
       ? "speaking"
@@ -226,9 +165,7 @@ function App() {
         : assistantState ===
             "listening"
           ? "listening"
-          : micIsActive
-            ? "listening"
-            : "standby";
+          : "standby";
 
   const voiceTranscript =
     assistantState ===
@@ -239,9 +176,7 @@ function App() {
       : assistantState ===
           "speaking"
         ? "Responding..."
-        : micIsActive
-          ? "Audio detected..."
-          : "Say your command";
+        : "Say your command";
 
   return (
     <main className="naveen-app">
@@ -323,9 +258,7 @@ function App() {
               status={
                 voiceStatus
               }
-              micLevel={
-                micLevel
-              }
+              micLevel={0}
               transcript={
                 voiceTranscript
               }

@@ -1,14 +1,13 @@
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
-mod audio;
-
 use serde::Serialize;
 use sysinfo::System;
-use tauri::State;
+use std::time::Duration;
+use tauri::Emitter;
 
-use audio::{get_level, AudioState};
+const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct SystemInfo {
     cpu_usage: f32,
     memory_used: u64,
@@ -19,21 +18,18 @@ struct SystemInfo {
 }
 
 #[tauri::command]
-fn jarvis_ping() -> String {
-    "CORE_ONLINE".to_string()
-}
-
-#[tauri::command]
 fn get_system_info() -> SystemInfo {
     let mut system = System::new_all();
 
-    std::thread::sleep(
-        sysinfo::MINIMUM_CPU_UPDATE_INTERVAL
-    );
-
+    system.refresh_cpu_usage();
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
     system.refresh_cpu_usage();
     system.refresh_memory();
 
+    system_info_from(&system)
+}
+
+fn system_info_from(system: &System) -> SystemInfo {
     SystemInfo {
         cpu_usage: system.global_cpu_usage(),
         memory_used: system.used_memory(),
@@ -46,72 +42,8 @@ fn get_system_info() -> SystemInfo {
     }
 }
 
-#[tauri::command]
-fn start_microphone(
-    state: State<'_, AudioState>,
-) -> Result<String, String> {
-    let mut stream_guard = state
-        .stream
-        .lock()
-        .map_err(|_| {
-            "Microphone state lock failed".to_string()
-        })?;
-
-    if stream_guard.is_some() {
-        return Ok(
-            "MICROPHONE_ALREADY_RUNNING".to_string()
-        );
-    }
-
-    let input = audio::start_microphone()?;
-
-    *stream_guard = Some(input);
-
-    Ok("MICROPHONE_STARTED".to_string())
-}
-
-#[tauri::command]
-fn stop_microphone(
-    state: State<'_, AudioState>,
-) -> Result<String, String> {
-    let mut stream_guard = state
-        .stream
-        .lock()
-        .map_err(|_| {
-            "Microphone state lock failed".to_string()
-        })?;
-
-    if stream_guard.is_none() {
-        return Ok(
-            "MICROPHONE_ALREADY_STOPPED".to_string()
-        );
-    }
-
-    *stream_guard = None;
-
-    Ok("MICROPHONE_STOPPED".to_string())
-}
-
-#[tauri::command]
-fn get_microphone_level(
-    state: State<'_, AudioState>,
-) -> Result<f32, String> {
-    let stream_guard = state
-        .stream
-        .lock()
-        .map_err(|_| {
-            "Microphone state lock failed".to_string()
-        })?;
-
-    match stream_guard.as_ref() {
-        Some(input) => get_level(input),
-        None => Ok(0.0),
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
-        .manage(AudioState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -121,14 +53,35 @@ pub fn run() {
                 )?;
             }
 
+            let app_handle = app.handle().clone();
+
+            std::thread::spawn(move || {
+                let mut system = System::new_all();
+
+                loop {
+                    system.refresh_cpu_usage();
+                    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+                    system.refresh_cpu_usage();
+                    system.refresh_memory();
+
+                    if app_handle
+                        .emit(
+                            SYSTEM_TELEMETRY_EVENT,
+                            system_info_from(&system),
+                        )
+                        .is_err()
+                    {
+                        break;
+                    }
+
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            jarvis_ping,
-            get_system_info,
-            start_microphone,
-            stop_microphone,
-            get_microphone_level
+            get_system_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

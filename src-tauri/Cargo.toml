@@ -1,8 +1,8 @@
 [package]
-name = "app"
+name = "naveen-ai-host"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Native host and security boundary for N.A.V.E.E.N AI"
+authors = ["N.A.V.E.E.N AI contributors"]
 license = ""
 repository = ""
 edition = "2021"
@@ -11,7 +11,7 @@ rust-version = "1.77.2"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "app_lib"
+name = "naveen_ai_host_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

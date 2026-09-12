@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  listen,
+  type UnlistenFn,
+} from "@tauri-apps/api/event";
 
-export async function pingJarvisCore(): Promise<string> {
-  return await invoke<string>("jarvis_ping");
-}
+const SYSTEM_TELEMETRY_EVENT =
+  "host://telemetry/system";
 
 export interface SystemInfo {
   cpu_usage: number;
@@ -19,20 +22,15 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   );
 }
 
-export async function startMicrophone(): Promise<string> {
-  return await invoke<string>(
-    "start_microphone",
-  );
-}
-
-export async function stopMicrophone(): Promise<string> {
-  return await invoke<string>(
-    "stop_microphone",
-  );
-}
-
-export async function getMicrophoneLevel(): Promise<number> {
-  return await invoke<number>(
-    "get_microphone_level",
+export async function subscribeToSystemTelemetry(
+  onSystemInfo: (
+    systemInfo: SystemInfo,
+  ) => void,
+): Promise<UnlistenFn> {
+  return await listen<SystemInfo>(
+    SYSTEM_TELEMETRY_EVENT,
+    (event) => {
+      onSystemInfo(event.payload);
+    },
   );
 }

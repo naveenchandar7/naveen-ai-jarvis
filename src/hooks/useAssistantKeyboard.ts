@@ -17,6 +17,10 @@ const KEY_STATE_MAP: Record<
 
 export function useAssistantKeyboard() {
   useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
 
