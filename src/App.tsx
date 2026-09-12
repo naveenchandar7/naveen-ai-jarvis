@@ -6,7 +6,6 @@ import { assistantConfig } from "./config/assistantConfig";
 
 import { useAssistantState } from "./hooks/useAssistantState";
 import { useAssistantKeyboard } from "./hooks/useAssistantKeyboard";
-
 import {
   getSystemInfo,
   subscribeToSystemTelemetry,
@@ -22,6 +21,7 @@ import {
 import { useThemeName } from "./hooks/useTheme";
 
 import { NovaCoreScene } from "./components/core/NovaCoreScene";
+import { SpeakingCoreScene } from "./components/speaking/SpeakingCoreScene";
 
 import { HudFrame } from "./components/hud/HudFrame";
 import { SystemPanel } from "./components/hud/SystemPanel";
@@ -35,8 +35,8 @@ import { SystemLogPanel } from "./components/hud/SystemLogPanel";
 import { VirtualCursor } from "./components/interaction/VirtualCursor";
 
 import {
-  visualStateProfiles,
-} from "./config/visualState";
+  assistantVisualProfiles,
+} from "./config/assistantVisualProfiles";
 
 import "./styles/theme.css";
 import "./styles/hud.css";
@@ -150,7 +150,7 @@ function App() {
     useAssistantState();
 
   const profile =
-    visualStateProfiles[
+    assistantVisualProfiles[
       assistantState
     ];
 
@@ -163,7 +163,7 @@ function App() {
           "processing"
         ? "processing"
         : assistantState ===
-            "listening"
+              "listening"
           ? "listening"
           : "standby";
 
@@ -176,24 +176,33 @@ function App() {
       : assistantState ===
           "speaking"
         ? "Responding..."
-        : "Say your command";
+        : "Voice pipeline pending";
 
   return (
     <main className="naveen-app">
-      <NovaCoreScene
-        intensity={
-          profile.intensity
-        }
-        particleDensity={
-          profile.particleDensity
-        }
-        pulseSpeed={
-          profile.pulseSpeed
-        }
-        rotationSpeed={
-          profile.rotationSpeed
-        }
-      />
+      {profile.usesSpeakingCore ? (
+        <SpeakingCoreScene
+          amplitude={0}
+        />
+      ) : (
+        <NovaCoreScene
+          intensity={
+            profile.sceneIntensity
+          }
+          particleDensity={
+            profile.sceneParticleDensity
+          }
+          pulseSpeed={
+            profile.scenePulseSpeed
+          }
+          rotationSpeed={
+            profile.sceneRotationSpeed
+          }
+          visualState={
+            assistantState
+          }
+        />
+      )}
 
       <HudFrame
         title={

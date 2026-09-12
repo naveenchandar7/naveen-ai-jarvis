@@ -2,12 +2,14 @@ import { Canvas } from "@react-three/fiber";
 import { Suspense } from "react";
 import * as THREE from "three";
 import { NovaCore } from "./NovaCore";
+import type { AssistantState } from "../../config/assistantVisualProfiles";
 
 interface NovaCoreSceneProps {
   intensity?: number;
   particleDensity?: number;
   pulseSpeed?: number;
   rotationSpeed?: number;
+  visualState?: AssistantState;
 }
 
 export function NovaCoreScene({
@@ -15,6 +17,7 @@ export function NovaCoreScene({
   particleDensity = 1,
   pulseSpeed = 1,
   rotationSpeed = 1,
+  visualState = "idle",
 }: NovaCoreSceneProps) {
   return (
     <div className="nova-core-scene">
@@ -38,6 +41,7 @@ export function NovaCoreScene({
             particleDensity={particleDensity}
             pulseSpeed={pulseSpeed}
             rotationSpeed={rotationSpeed}
+            visualState={visualState}
           />
         </Suspense>
       </Canvas>

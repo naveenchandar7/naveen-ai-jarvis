@@ -7,6 +7,7 @@ import {
 const SYSTEM_TELEMETRY_EVENT =
   "host://telemetry/system";
 
+
 export interface SystemInfo {
   cpu_usage: number;
   memory_used: number;

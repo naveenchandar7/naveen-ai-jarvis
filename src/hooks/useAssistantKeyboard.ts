@@ -15,6 +15,11 @@ const KEY_STATE_MAP: Record<
   "4": "speaking",
 };
 
+/**
+ * Development-only visual state controls. Privileged/native actions must not
+ * originate from keyboard/UI handlers. Production voice lifecycle will be
+ * driven by the native host/core pipeline through explicit capability paths.
+ */
 export function useAssistantKeyboard() {
   useEffect(() => {
     if (!import.meta.env.DEV) {

@@ -1,8 +1,8 @@
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
 use serde::Serialize;
-use sysinfo::System;
 use std::time::Duration;
+use sysinfo::System;
 use tauri::Emitter;
 
 const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
@@ -34,10 +34,8 @@ fn system_info_from(system: &System) -> SystemInfo {
         cpu_usage: system.global_cpu_usage(),
         memory_used: system.used_memory(),
         memory_total: system.total_memory(),
-        os_name: System::name()
-            .unwrap_or_else(|| "Unknown".to_string()),
-        os_version: System::os_version()
-            .unwrap_or_else(|| "Unknown".to_string()),
+        os_name: System::name().unwrap_or_else(|| "Unknown".to_string()),
+        os_version: System::os_version().unwrap_or_else(|| "Unknown".to_string()),
         uptime: System::uptime(),
     }
 }

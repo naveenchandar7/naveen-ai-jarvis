@@ -1,9 +1,6 @@
-import {
-  visualStateProfiles,
-} from "../config/visualState";
+import type { AssistantState } from "../config/assistantVisualProfiles";
 
-export type AssistantState =
-  keyof typeof visualStateProfiles;
+export type { AssistantState };
 
 type StateListener = () => void;
 

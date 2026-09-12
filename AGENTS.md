@@ -4,7 +4,7 @@ Permanent rules for coding agents working in this repository.
 
 The full blueprint is [`docs/NAVEEN-MASTER-ARCHITECTURE.md`](docs/NAVEEN-MASTER-ARCHITECTURE.md). If this file and application code disagree, **stop and ask**; do not silently invent a new architecture.
 
-**This phase is documentation and boundaries only.** Do not implement JARVIS Core, install AI runtimes, or change application source unless a later task explicitly says so.
+**Implementation is now active.** Preserve the locked boundaries below while building the system. Do not install heavy AI runtimes until their contracts and security boundaries are ready.
 
 ## What this project is
 
@@ -16,7 +16,7 @@ Display names in [`src/config/assistantConfig.ts`](src/config/assistantConfig.ts
 - Visual core: NOVA
 - Wake name: JARVIS
 
-This repository currently contains a **desktop HUD shell** (React + Vite + Three.js) and a **thin Tauri 2 / Rust sidecar** (CPAL microphone RMS + sysinfo telemetry). The Python AI Core, Capability Registry, Security Gateway, Device Gateway traits, and secure host↔core IPC **are not implemented yet**.
+This repository currently contains a **desktop HUD shell** (React + Vite + Three.js) and a **thin Tauri 2 / Rust host** (sysinfo telemetry plus a retained CPAL audio adapter that is not yet exposed through a privileged voice-session path). The Python AI Core, Capability Registry, Security Gateway, Device Gateway traits, and secure host↔core IPC **are not implemented yet**.
 
 ## Decision classes (read first)
 

@@ -1,8 +1,8 @@
 import { useTheme } from "../../hooks/useTheme";
 import {
-  visualProfiles,
-  type AssistantVisualState,
-} from "../../config/visualProfiles";
+  assistantVisualProfiles,
+  type AssistantState,
+} from "../../config/assistantVisualProfiles";
 
 import { CoreGlow } from "./CoreGlow";
 import { EnergySphere } from "./EnergySphere";
@@ -16,7 +16,7 @@ interface NovaCoreProps {
   particleDensity?: number;
   pulseSpeed?: number;
   rotationSpeed?: number;
-  visualState?: AssistantVisualState;
+  visualState?: AssistantState;
 }
 
 export function NovaCore({
@@ -38,7 +38,7 @@ export function NovaCore({
    * neural HUD → JARVIS HUD → other visual skins
    */
   const profile =
-    visualProfiles[visualState];
+    assistantVisualProfiles[visualState];
 
   return (
     <group>
@@ -57,11 +57,11 @@ export function NovaCore({
   }
   intensity={
     intensity *
-    profile.intensity
+    profile.neuralIntensity
   }
   pulseSpeed={
     pulseSpeed *
-    profile.speed
+    profile.neuralSpeed
   }
 />
 
@@ -83,7 +83,7 @@ export function NovaCore({
 
         intensity={
           intensity *
-          profile.intensity
+          profile.neuralIntensity
         }
 
         pointCount={
@@ -103,7 +103,7 @@ export function NovaCore({
 
         speed={
           pulseSpeed *
-          profile.speed
+          profile.neuralSpeed
         }
       />
 
@@ -123,7 +123,7 @@ export function NovaCore({
         }
         rotationSpeed={
           rotationSpeed *
-          profile.speed
+          profile.neuralSpeed
         }
       />
 
@@ -137,12 +137,12 @@ export function NovaCore({
         }
         intensity={
           intensity *
-          profile.intensity *
+          profile.neuralIntensity *
           0.75
         }
         speed={
           pulseSpeed *
-          profile.speed
+          profile.neuralSpeed
         }
       />
 
@@ -161,12 +161,12 @@ export function NovaCore({
         )}
         intensity={
           intensity *
-          profile.intensity *
+          profile.neuralIntensity *
           0.5
         }
         speed={
           pulseSpeed *
-          profile.speed *
+          profile.neuralSpeed *
           0.5
         }
       />
@@ -178,7 +178,7 @@ export function NovaCore({
       <CoreGlow
         intensity={
           intensity *
-          profile.intensity
+          profile.neuralIntensity
         }
       />
     </group>
