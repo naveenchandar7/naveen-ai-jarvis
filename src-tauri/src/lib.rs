@@ -5,6 +5,8 @@ use sysinfo::System;
 use std::time::Duration;
 use tauri::Emitter;
 
+mod security;
+
 const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
 
 #[derive(Clone, Serialize)]
