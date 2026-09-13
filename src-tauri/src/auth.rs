@@ -1190,7 +1190,7 @@ mod tests {
             server.verify_session_message(
                 &session,
                 AUTH_PROTOCOL_VERSION,
-                "msg-1-replay",
+                "msg-1",
                 1,
                 digest,
                 &proof,

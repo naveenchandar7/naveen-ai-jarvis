@@ -1258,7 +1258,7 @@ mod tests {
             session(),
         );
         let envelope = request(1);
-        let proof_text = format!("{:?}", &envelope);
+        let proof_text = format!("{:?}", envelope);
         client.send(&envelope).expect("send");
         let _ = host.receive_request(IPC_DEFAULT_TIMEOUT, 1_000);
         let audit = format!("{:?}", host.take_audit_events());
