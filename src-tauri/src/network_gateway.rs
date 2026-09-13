@@ -116,10 +116,7 @@ impl NetworkGateway {
     fn ensure_model_allowed(&self, url: &str) -> Result<(), String> {
         let origin = normalize_origin(url).ok_or_else(|| "invalid model endpoint".to_string())?;
         if is_loopback_origin(&origin)
-            || self
-                .allowlist
-                .iter()
-                .any(|allowed| origin == *allowed)
+            || self.allowlist.iter().any(|allowed| origin == *allowed)
         {
             return Ok(());
         }
@@ -157,12 +154,35 @@ fn normalize_origin(url: &str) -> Option<String> {
 }
 
 fn is_loopback_origin(origin: &str) -> bool {
-    origin.starts_with("http://127.0.0.1")
-        || origin.starts_with("http://localhost")
-        || origin.starts_with("http://[::1]")
-        || origin.starts_with("https://127.0.0.1")
-        || origin.starts_with("https://localhost")
-        || origin.starts_with("https://[::1]")
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+
+    let host = if let Some(stripped) = authority.strip_prefix('[') {
+        let Some(end) = stripped.find(']') else {
+            return false;
+        };
+        if !stripped[end + 1..].is_empty() {
+            let port = &stripped[end + 2..];
+            if !port.is_empty() && !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                return false;
+            }
+        }
+        &stripped[..end]
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        host
+    } else {
+        authority
+    };
+
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 impl Default for NetworkGateway {
@@ -190,10 +210,18 @@ mod tests {
     }
 
     #[test]
-    fn loopback_matching_does_not_accept_attacker_hostname() {
+    fn loopback_matching_requires_exact_host() {
         assert!(is_loopback_origin("http://127.0.0.1:11434"));
         assert!(!is_loopback_origin("http://127.0.0.1.evil.example"));
         assert!(is_loopback_origin("http://localhost:3000"));
         assert!(!is_loopback_origin("http://localhost.evil.example"));
+        assert!(is_loopback_origin("http://[::1]:8080"));
+        assert!(!is_loopback_origin("http://[::1].evil.example"));
+    }
+
+    #[test]
+    fn loopback_matching_rejects_malformed_ports() {
+        assert!(!is_loopback_origin("http://localhost:"));
+        assert!(!is_loopback_origin("http://localhost:abc"));
     }
 }
