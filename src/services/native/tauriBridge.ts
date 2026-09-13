@@ -23,6 +23,10 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   return await invoke<SystemInfo>("get_system_info");
 }
 
+export async function getCoreStatus(): Promise<"connected" | "connecting"> {
+  return await invoke<"connected" | "connecting">("get_core_status");
+}
+
 export async function submitText(text: string): Promise<string> {
   return await invoke<string>("submit_text", { text });
 }
