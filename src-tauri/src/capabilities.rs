@@ -89,11 +89,17 @@ impl HostCapabilityRegistry {
     }
 }
 
+impl Default for HostCapabilityRegistry {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn unknown_capability_is_denied() {
@@ -119,9 +125,13 @@ mod tests {
 
     #[test]
     fn file_reads_are_confined_to_workspace() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("naveen-ai-{unique}"));
+        let workspace = root.join("workspace");
+        let outside = root.join("outside.txt");
         fs::create_dir_all(&workspace).expect("workspace");
         fs::write(workspace.join("note.txt"), "hello from NAVEEN").expect("note");
         fs::write(&outside, "secret").expect("outside");
@@ -135,5 +145,6 @@ mod tests {
         assert!(registry
             .execute(FILESYSTEM_READ_TEXT, json!({"path": "../outside.txt"}))
             .is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }
