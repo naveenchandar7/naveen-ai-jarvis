@@ -153,7 +153,7 @@ impl HostCapabilityRegistry {
                 .arg(url)
                 .spawn()
                 .map_err(|_| "URL could not be opened".to_string())?;
-            return Ok(json!({"url": url, "opened": true}));
+            Ok(json!({"url": url, "opened": true}))
         }
 
         #[cfg(not(windows))]
