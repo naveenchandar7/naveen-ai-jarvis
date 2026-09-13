@@ -17,7 +17,7 @@ Established the versioned message contracts, framing, codec/transport interfaces
 
 ## Completed: Live Rust↔Python Core Connection
 
-The repository contains the first supervised Python Core process and Rust host-side lifecycle for it.
+The repository contains the supervised Python Core process and Rust host-side lifecycle for it.
 
 ### Implemented
 
@@ -35,7 +35,7 @@ The repository contains the first supervised Python Core process and Rust host-s
 
 ## Completed: Core Orchestration / Command Vertical Slice
 
-The Python Core is no longer heartbeat-only. A real text-command path now crosses the locked React → Rust → authenticated Python architecture and returns a response to the HUD.
+The Python Core now crosses the locked React → Rust → authenticated Python architecture and returns structured responses to the HUD.
 
 ### Implemented
 
@@ -44,39 +44,38 @@ The Python Core is no longer heartbeat-only. A real text-command path now crosse
 - Host commands are delivered to Python as authenticated-session IPC events.
 - Python Core accepts host text events, performs deterministic intent routing, and emits structured `core.status`, `core.response`, and `core.error` events.
 - Intent routing supports greeting, identity, help, explicit memory save/recall/forget, system status, research intent recognition, and a provider-independent conversation fallback.
-- `SQLiteMemoryStore` provides durable, explicit memory with namespaces, timestamps, provenance/source metadata, retrieval, correction-by-forget, and bounded inputs.
-- `ModelProvider` / `ModelManager` provide a replaceable model boundary; the current fallback provider is intentionally offline and deterministic rather than pretending a cloud/local model is installed.
 - Python Core requests `system.telemetry.read` through a typed capability request instead of accessing the OS directly.
 - Rust `HostCapabilityRegistry` executes host capabilities only after `SecurityGateway::authorize_at` permits them.
-- The first registered host capability is low-risk `system.telemetry.read`, implemented through `device_gateway.rs`.
-- Unknown, denied, or confirmation-required capabilities return explicit safe failures rather than falling through to unrestricted execution.
 - Capability decisions log only capability identifiers and safe outcomes; request inputs and secrets are not logged.
-- Host-to-Core and Core-to-host events carry the authenticated session identifier, bounded payloads, and monotonic event sequences on the active connection.
-- The HUD now exposes a real command panel and displays Core connection, processing, response, and error events from the host event bridge.
 
-### Security boundary preserved
+## Completed: Provider Contract / Routing Hardening
 
-```text
-React / Three.js
-        ↓ Tauri command / events only
-Rust / Tauri host
-        ↓ authenticated local IPC
-Python Core
-        ↓ typed Capability Request
-Security Gateway
-        ↓ authorized capability
-Rust Device Gateway
-        ↓
-OS / device
-```
+The Core now exposes stable replaceable-provider boundaries without selecting permanent engines or requiring a backend installation.
 
-Python has no unrestricted shell, filesystem, browser, process, microphone, model, network, or device authority in this milestone.
+### Provider boundaries
+
+- `MemoryStore` — stable durable-memory contract; `SQLiteMemoryStore` is the current local implementation.
+- `KnowledgeProvider` — stable indexed-document retrieval contract; `SQLiteKnowledgeStore` is the current local keyword-search implementation.
+- `EmbeddingProvider` — separate semantic embedding boundary reserved for future RAG implementations; no embedding runtime is installed or selected.
+- `ModelProvider` — model inference contract.
+- `ModelManager` — task-aware provider routing for conversation, fast-response, reasoning, and research-synthesis roles. Providers can be registered independently; no model name is hardcoded.
+- `ResearchProvider` — already isolated behind a provider boundary and remains host-capability mediated for network access.
+- `VadProvider`, `SttProvider`, and `TtsProvider` — already isolated as voice provider contracts; concrete engines remain intentionally open.
+
+The composition root (`core/naveen_core/main.py`) now injects the current memory and knowledge implementations explicitly into the Orchestrator. The Orchestrator depends on provider contracts rather than selecting its own storage backend.
+
+This milestone does **not** choose or install a permanent database, vector database, embedding model, LLM, STT engine, VAD engine, TTS engine, or cloud provider.
+
+## Current runtime scope
+
+The current live runtime proves the Rust host can supervise and authenticate the Python Core and carry a text-command vertical slice through the Orchestrator. Deterministic identity/greeting/help paths remain pre-model bootstrap behavior; they are not the final LLM experience.
+
+Current memory and knowledge implementations are provisional local implementations behind replaceable contracts. RAG is currently keyword retrieval; semantic/vector retrieval remains a future provider implementation.
 
 ## Current deferred capabilities
 
-The following remain deliberately unimplemented because the required provider/runtime choices and host integrations are not yet verified in this environment:
-
 - real LLM inference/provider adapters and resource-aware model loading
+- semantic/vector RAG and embedding provider implementation
 - native STT/VAD/TTS and wake-word/barge-in pipeline
 - network-backed research provider
 - broader filesystem/browser/software integrations
@@ -85,29 +84,18 @@ The following remain deliberately unimplemented because the required provider/ru
 - multi-device synchronization
 - controlled self-improvement workflows
 
-These are extension points, not permission to bypass the existing Security Gateway or IPC architecture.
+A model such as the user-mentioned “Needle 2” may be evaluated later as a **candidate** for a specific fast-response role, but it is not selected or installed as part of this milestone.
 
-## Tests and verification
+## Verification targets
 
-### Executed in this environment
-
-The Python Core suite was executed locally:
+Run locally after pulling the milestone:
 
 ```text
-python -m py_compile core/naveen_core/*.py
 python -m unittest discover -v core/naveen_core
+Get-ChildItem core\naveen_core\*.py | ForEach-Object { python -m py_compile $_.FullName }
 ```
 
-Results:
-
-- Python compilation: **PASS**
-- Python unit tests: **20 passed, 0 failed**
-
-The suite covers the live authenticated wire shape, frame validation, canonical message/proof material, event dispatch, intent routing, explicit memory behavior and namespaces, Core runtime events, capability-bound system status handling, and error handling for unsupported host events.
-
-### Not executable in this environment
-
-The current execution environment does not provide `cargo`, `rustc`, or `rustfmt`, and the repository has no GitHub Actions workflow available to substitute for the missing Rust toolchain. Therefore these commands are **not claimed as passed** here:
+Rust verification remains:
 
 ```text
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
@@ -116,10 +104,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
-### Required local Windows verification
-
-Run the four Cargo commands above from the Windows development environment, then launch the Tauri application and verify Core bootstrap/authentication, text command round-trip, capability authorization, memory persistence, child cleanup, reconnect behavior, and fail-closed behavior for malformed or unauthorized messages.
+Live Windows verification should still cover Core bootstrap/authentication, stable connection, text round-trip, capability authorization, memory persistence, reconnect behavior, and fail-closed handling.
 
 ## Next logical milestone
 
-Complete the **real provider layer** behind the existing abstractions: resource-aware `ModelManager`, then native voice input/output and a host-mediated research provider. Each provider must be independently replaceable and continue to cross the same authenticated IPC + Security Gateway boundary.
+Evaluate concrete provider candidates **without coupling them into Core**: first a resource-aware model/provider selection layer, then native voice providers and semantic RAG/embedding support. Selection will be based on the actual Windows hardware/runtime constraints, language coverage, latency, quality, licensing, and offline/cost requirements.
