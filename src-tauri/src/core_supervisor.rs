@@ -2,20 +2,27 @@ use crate::auth::{
     AuthChallenge, AuthenticatedSession, AuthenticationProvider, AuthenticationServer,
     ChallengeResponse, AUTH_PROTOCOL_VERSION,
 };
+use crate::capabilities::{HostCapabilityRegistry, SYSTEM_TELEMETRY_READ};
 use crate::ipc::{
-    canonical_message_material, decode_frame, encode_frame, IpcEnvelope, IpcError,
-    IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
+    canonical_message_material, decode_frame, encode_frame, IpcEnvelope, IpcError, IpcTransport,
+    RequestEnvelope, ResponseEnvelope, ResponseStatus,
+};
+use crate::security::{
+    CapabilityPolicy, CapabilityRequest, RiskLevel, SecurityDecision, SecurityGateway,
+    Permission,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::path::BaseDirectory;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(windows)]
 use crate::ipc::WindowsLocalPipeTransport;
@@ -25,6 +32,9 @@ const CORE_HEARTBEAT_PAYLOAD: &[u8] = b"heartbeat";
 const CORE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(8);
 const CORE_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const CORE_RECONNECT_MAX: Duration = Duration::from_secs(30);
+const CORE_COMMAND_QUEUE_SIZE: usize = 64;
+const CORE_TEXT_MAX_LEN: usize = 8 * 1024;
+const CORE_EVENT_NAME: &str = "host://core/event";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -45,7 +55,28 @@ pub enum CoreSupervisorError {
 pub struct CoreLaunchConfig {
     pub python_executable: PathBuf,
     pub script_path: PathBuf,
+    pub memory_db_path: PathBuf,
     pub heartbeat_timeout: Duration,
+}
+
+#[derive(Debug)]
+struct HostCommand {
+    correlation_id: String,
+    text: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct HostCoreEvent {
+    pub event_type: String,
+    pub event_id: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilityRequestPayload {
+    request_id: String,
+    capability_id: String,
+    input: Value,
 }
 
 impl CoreLaunchConfig {
@@ -66,9 +97,16 @@ impl CoreLaunchConfig {
             return Err(CoreSupervisorError::ProcessLaunch);
         }
 
+        let memory_db_path = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|_| CoreSupervisorError::ProcessLaunch)?
+            .join("memory.sqlite3");
+
         Ok(Self {
             python_executable,
             script_path,
+            memory_db_path,
             heartbeat_timeout: CORE_HEARTBEAT_TIMEOUT,
         })
     }
@@ -110,6 +148,9 @@ impl CoreProcessLauncher for PlatformCoreProcessLauncher {
 pub struct CoreSupervisor {
     stop: Arc<AtomicBool>,
     join: Mutex<Option<JoinHandle<()>>>,
+    command_tx: Option<SyncSender<HostCommand>>,
+    connected: Arc<AtomicBool>,
+    next_command_id: AtomicU64,
 }
 
 impl CoreSupervisor {
@@ -117,25 +158,74 @@ impl CoreSupervisor {
         Self {
             stop: Arc::new(AtomicBool::new(true)),
             join: Mutex::new(None),
+            command_tx: None,
+            connected: Arc::new(AtomicBool::new(false)),
+            next_command_id: AtomicU64::new(1),
         }
     }
 
-    pub fn start(config: CoreLaunchConfig) -> Self {
-        Self::start_with_launcher(config, Arc::new(PlatformCoreProcessLauncher))
-    }
-
-    pub fn start_with_launcher(
-        config: CoreLaunchConfig,
-        launcher: Arc<dyn CoreProcessLauncher>,
-    ) -> Self {
+    pub fn start(config: CoreLaunchConfig, app_handle: AppHandle) -> Self {
+        let (command_tx, command_rx) = mpsc::sync_channel(CORE_COMMAND_QUEUE_SIZE);
         let stop = Arc::new(AtomicBool::new(false));
+        let connected = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
-        let join = std::thread::spawn(move || supervisor_loop(config, launcher, stop_for_thread));
+        let connected_for_thread = Arc::clone(&connected);
+        let join = std::thread::spawn(move || {
+            supervisor_loop(
+                config,
+                Arc::new(PlatformCoreProcessLauncher),
+                stop_for_thread,
+                command_rx,
+                app_handle,
+                connected_for_thread,
+            )
+        });
 
         Self {
             stop,
             join: Mutex::new(Some(join)),
+            command_tx: Some(command_tx),
+            connected,
+            next_command_id: AtomicU64::new(1),
         }
+    }
+
+    pub fn submit_text(&self, text: String) -> Result<String, String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err("Command cannot be empty".to_string());
+        }
+        if trimmed.len() > CORE_TEXT_MAX_LEN {
+            return Err("Command is too long".to_string());
+        }
+        if self.stop.load(Ordering::Acquire) {
+            return Err("NAVEEN Core is stopped".to_string());
+        }
+        if !self.connected.load(Ordering::Acquire) {
+            return Err("NAVEEN Core is not connected".to_string());
+        }
+
+        let Some(command_tx) = &self.command_tx else {
+            return Err("NAVEEN Core is unavailable".to_string());
+        };
+
+        let id = self.next_command_id.fetch_add(1, Ordering::Relaxed);
+        let correlation_id = format!("ui-text-{id}");
+        command_tx
+            .try_send(HostCommand {
+                correlation_id: correlation_id.clone(),
+                text,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => "NAVEEN Core command queue is full".to_string(),
+                mpsc::TrySendError::Disconnected(_) => "NAVEEN Core stopped".to_string(),
+            })?;
+
+        Ok(correlation_id)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 
     pub fn shutdown(&self) {
@@ -162,6 +252,9 @@ fn supervisor_loop(
     config: CoreLaunchConfig,
     launcher: Arc<dyn CoreProcessLauncher>,
     stop: Arc<AtomicBool>,
+    command_rx: Receiver<HostCommand>,
+    app_handle: AppHandle,
+    connected: Arc<AtomicBool>,
 ) {
     let mut auth = match AuthenticationServer::new() {
         Ok(server) => server,
@@ -171,13 +264,40 @@ fn supervisor_loop(
         }
     };
 
+    let security = SecurityGateway::new(vec![CapabilityPolicy::new(
+        SYSTEM_TELEMETRY_READ,
+        vec![Permission::SystemTelemetryRead],
+        RiskLevel::Low,
+    )]);
+    let capabilities = HostCapabilityRegistry::new();
     let mut backoff = CORE_RECONNECT_INITIAL;
 
     while !stop.load(Ordering::Acquire) {
-        match run_connection(&config, launcher.as_ref(), &stop, &mut auth) {
+        let _ = emit_core_event(&app_handle, "core.status", "host-status-connecting", json!({
+            "state": "connecting"
+        }));
+
+        match run_connection(
+            &config,
+            launcher.as_ref(),
+            &stop,
+            &mut auth,
+            &command_rx,
+            &app_handle,
+            &security,
+            &capabilities,
+            &connected,
+        ) {
             Ok(()) => backoff = CORE_RECONNECT_INITIAL,
             Err(error) => {
+                connected.store(false, Ordering::Release);
                 auth.invalidate_all_sessions(now_ms());
+                let _ = emit_core_event(
+                    &app_handle,
+                    "core.status",
+                    "host-status-disconnected",
+                    json!({ "state": "disconnected" }),
+                );
                 log_core_failure(&error);
             }
         }
@@ -190,7 +310,14 @@ fn supervisor_loop(
         backoff = std::cmp::min(backoff.saturating_mul(2), CORE_RECONNECT_MAX);
     }
 
+    connected.store(false, Ordering::Release);
     auth.invalidate_all_sessions(now_ms());
+    let _ = emit_core_event(
+        &app_handle,
+        "core.status",
+        "host-status-stopped",
+        json!({ "state": "stopped" }),
+    );
     log::info!("NAVEEN Core supervisor stopped");
 }
 
@@ -199,9 +326,24 @@ fn run_connection(
     launcher: &dyn CoreProcessLauncher,
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
+    command_rx: &Receiver<HostCommand>,
+    app_handle: &AppHandle,
+    security: &SecurityGateway,
+    capabilities: &HostCapabilityRegistry,
+    connected: &Arc<AtomicBool>,
 ) -> Result<(), CoreSupervisorError> {
     let mut process = launcher.launch(config)?;
-    let result = establish_and_run(config, &mut *process, stop, auth);
+    let result = establish_and_run(
+        config,
+        &mut *process,
+        stop,
+        auth,
+        command_rx,
+        app_handle,
+        security,
+        capabilities,
+        connected,
+    );
     process.shutdown();
     result
 }
@@ -211,6 +353,11 @@ fn establish_and_run(
     process: &mut dyn ManagedCoreProcess,
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
+    command_rx: &Receiver<HostCommand>,
+    app_handle: &AppHandle,
+    security: &SecurityGateway,
+    capabilities: &HostCapabilityRegistry,
+    connected: &Arc<AtomicBool>,
 ) -> Result<(), CoreSupervisorError> {
     let correlation_id = format!("core-auth-{}", now_ms());
 
@@ -274,8 +421,26 @@ fn establish_and_run(
         },
     )?;
 
+    connected.store(true, Ordering::Release);
+    let _ = emit_core_event(
+        app_handle,
+        "core.status",
+        "host-status-authenticated",
+        json!({ "state": "authenticated" }),
+    );
+
     log::info!("NAVEEN Core authenticated");
-    heartbeat_loop(config, process, stop, auth, &session)
+    heartbeat_loop(
+        config,
+        process,
+        stop,
+        auth,
+        &session,
+        command_rx,
+        app_handle,
+        security,
+        capabilities,
+    )
 }
 
 fn heartbeat_loop(
@@ -284,39 +449,219 @@ fn heartbeat_loop(
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
     session: &AuthenticatedSession,
+    command_rx: &Receiver<HostCommand>,
+    app_handle: &AppHandle,
+    security: &SecurityGateway,
+    capabilities: &HostCapabilityRegistry,
 ) -> Result<(), CoreSupervisorError> {
-    let mut missed_heartbeats = 0_u32;
+    let mut last_core_event_sequence = 0_u64;
+    let mut outbound_sequence = 0_u64;
 
     while !stop.load(Ordering::Acquire) {
+        loop {
+            match command_rx.try_recv() {
+                Ok(command) => {
+                    outbound_sequence = outbound_sequence.saturating_add(1);
+                    send_host_event(
+                        process.transport(),
+                        session,
+                        outbound_sequence,
+                        &format!("input-{}", outbound_sequence),
+                        "core.input.text",
+                        json!({
+                            "correlation_id": command.correlation_id,
+                            "text": command.text,
+                        }),
+                    )?;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
         if !process.is_running()? {
             return Err(CoreSupervisorError::ChildExited);
         }
 
         match process
             .transport()
-            .recv_frame(config.heartbeat_timeout.min(Duration::from_secs(2)))
+            .recv_frame(config.heartbeat_timeout.min(Duration::from_millis(250)))
         {
             Ok(frame) => {
-                missed_heartbeats = 0;
                 let envelope = decode_frame(&crate::ipc::JsonIpcCodec, &frame)
                     .map_err(|_| CoreSupervisorError::Protocol)?;
-                let request = match envelope {
-                    IpcEnvelope::Request(request) => request,
-                    _ => return Err(CoreSupervisorError::Protocol),
-                };
-                handle_core_request(process.transport(), auth, session, request)?;
-            }
-            Err(IpcError::Timeout) => {
-                missed_heartbeats += 1;
-                if missed_heartbeats >= 4 {
-                    return Err(CoreSupervisorError::HeartbeatTimeout);
+
+                match envelope {
+                    IpcEnvelope::Request(request) => {
+                        handle_core_request(process.transport(), auth, session, request)?;
+                    }
+                    IpcEnvelope::Event(event) => {
+                        if event.session_id != *session.session_id().as_bytes()
+                            || event.sequence <= last_core_event_sequence
+                        {
+                            return Err(CoreSupervisorError::Authentication);
+                        }
+                        last_core_event_sequence = event.sequence;
+                        handle_core_event(
+                            process.transport(),
+                            session,
+                            &event,
+                            &mut outbound_sequence,
+                            app_handle,
+                            security,
+                            capabilities,
+                        )?;
+                    }
+                    IpcEnvelope::Response(_) => return Err(CoreSupervisorError::Protocol),
                 }
             }
+            Err(IpcError::Timeout) => {}
             Err(_) => return Err(CoreSupervisorError::Transport),
         }
     }
 
     Ok(())
+}
+
+fn handle_core_event(
+    transport: &mut dyn IpcTransport,
+    session: &AuthenticatedSession,
+    event: &crate::ipc::EventEnvelope,
+    outbound_sequence: &mut u64,
+    app_handle: &AppHandle,
+    security: &SecurityGateway,
+    capabilities: &HostCapabilityRegistry,
+) -> Result<(), CoreSupervisorError> {
+    match event.event_type.as_str() {
+        "core.status" | "core.response" | "core.error" => {
+            let payload: Value = serde_json::from_slice(&event.payload)
+                .map_err(|_| CoreSupervisorError::Protocol)?;
+            if !payload.is_object() {
+                return Err(CoreSupervisorError::Protocol);
+            }
+            emit_core_event(
+                app_handle,
+                &event.event_type,
+                &event.event_id,
+                payload,
+            )
+            .map_err(|_| CoreSupervisorError::Transport)
+        }
+        "capability.request" => {
+            let request: CapabilityRequestPayload = serde_json::from_slice(&event.payload)
+                .map_err(|_| CoreSupervisorError::Protocol)?;
+
+            if request.request_id.is_empty()
+                || request.request_id.len() > crate::ipc::IPC_MAX_EVENT_ID_LEN
+                || request.capability_id.is_empty()
+                || request.capability_id.len() > crate::ipc::IPC_MAX_EVENT_TYPE_LEN
+            {
+                return Err(CoreSupervisorError::Protocol);
+            }
+
+            *outbound_sequence = outbound_sequence.saturating_add(1);
+            let result = execute_capability(
+                security,
+                capabilities,
+                session,
+                &request,
+            );
+
+            send_host_event(
+                transport,
+                session,
+                *outbound_sequence,
+                &format!("capability-result-{}", request.request_id),
+                "capability.result",
+                match result {
+                    Ok(output) => json!({
+                        "request_id": request.request_id,
+                        "capability_id": request.capability_id,
+                        "ok": true,
+                        "output": output,
+                    }),
+                    Err(error) => json!({
+                        "request_id": request.request_id,
+                        "capability_id": request.capability_id,
+                        "ok": false,
+                        "output": {},
+                        "error": error,
+                    }),
+                },
+            )
+        }
+        _ => Err(CoreSupervisorError::Protocol),
+    }
+}
+
+fn execute_capability(
+    security: &SecurityGateway,
+    capabilities: &HostCapabilityRegistry,
+    session: &AuthenticatedSession,
+    request: &CapabilityRequestPayload,
+) -> Result<Value, String> {
+    let capability_request = CapabilityRequest {
+        capability_id: request.capability_id.clone(),
+    };
+
+    match security.authorize_at(now_ms(), Some(session), &capability_request, false) {
+        SecurityDecision::Allow => {
+            log::info!("NAVEEN capability allowed: {}", request.capability_id);
+            capabilities.execute(&request.capability_id, request.input.clone())
+        }
+        SecurityDecision::RequireConfirmation => {
+            log::warn!(
+                "NAVEEN capability requires confirmation: {}",
+                request.capability_id
+            );
+            Err("confirmation_required".to_string())
+        }
+        SecurityDecision::Deny(_) => {
+            log::warn!("NAVEEN capability denied: {}", request.capability_id);
+            Err("capability_denied".to_string())
+        }
+    }
+}
+
+fn emit_core_event(
+    app_handle: &AppHandle,
+    event_type: &str,
+    event_id: &str,
+    payload: Value,
+) -> Result<(), tauri::Error> {
+    app_handle.emit(
+        CORE_EVENT_NAME,
+        HostCoreEvent {
+            event_type: event_type.to_string(),
+            event_id: event_id.to_string(),
+            payload,
+        },
+    )
+}
+
+fn send_host_event(
+    transport: &mut dyn IpcTransport,
+    session: &AuthenticatedSession,
+    sequence: u64,
+    event_id: &str,
+    event_type: &str,
+    payload: Value,
+) -> Result<(), CoreSupervisorError> {
+    let payload = serde_json::to_vec(&payload).map_err(|_| CoreSupervisorError::Protocol)?;
+    let envelope = IpcEnvelope::Event(crate::ipc::EventEnvelope {
+        protocol_version: crate::ipc::IPC_PROTOCOL_VERSION,
+        event_id: event_id.to_string(),
+        session_id: *session.session_id().as_bytes(),
+        sequence,
+        event_type: event_type.to_string(),
+        payload,
+        proof: None,
+    });
+    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &envelope)
+        .map_err(|_| CoreSupervisorError::Protocol)?;
+    transport
+        .send_frame(&frame)
+        .map_err(|_| CoreSupervisorError::Transport)
 }
 
 fn handle_core_request(
@@ -546,6 +891,10 @@ impl WindowsCoreProcess {
             .map(Path::to_path_buf)
             .ok_or(CoreSupervisorError::ProcessLaunch)?;
 
+        if let Some(parent) = config.memory_db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| CoreSupervisorError::ProcessLaunch)?;
+        }
+
         let mut command = Command::new(&config.python_executable);
         command
             .arg("-E")
@@ -555,6 +904,7 @@ impl WindowsCoreProcess {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::null())
             .env_clear()
+            .env("NAVEEN_MEMORY_DB", &config.memory_db_path)
             .current_dir(working_dir)
             .creation_flags(CREATE_NO_WINDOW);
 
