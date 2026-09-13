@@ -9,7 +9,7 @@ use crate::ipc::{
     canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope,
     IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
 };
-use crate::network_gateway::NetworkGateway;
+use crate::network_gateway::{NetworkGateway, MODEL_COMPLETE, NETWORK_FETCH_TEXT};
 use crate::security::{
     CapabilityPolicy, CapabilityRequest, Permission, RiskLevel, SecurityDecision, SecurityGateway,
 };
@@ -31,12 +31,12 @@ use crate::ipc::WindowsLocalPipeTransport;
 
 const CORE_HEARTBEAT_METHOD: &str = "core.health";
 const CORE_HEARTBEAT_PAYLOAD: &[u8] = b"heartbeat";
-const CORE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(8);
 const CORE_RECONNECT_INITIAL: Duration = Duration::from_secs(1);
 const CORE_RECONNECT_MAX: Duration = Duration::from_secs(30);
 const CORE_COMMAND_QUEUE_SIZE: usize = 64;
 const CORE_TEXT_MAX_LEN: usize = 8 * 1024;
 const CORE_EVENT_NAME: &str = "host://core/event";
+const CORE_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(8);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -190,9 +190,9 @@ impl CoreSupervisor {
             supervisor_loop(
                 config,
                 launcher,
-                stop_for_thread,
-                command_rx,
                 app_handle,
+                command_rx,
+                stop_for_thread,
                 connected_for_thread,
             )
         });
@@ -207,36 +207,23 @@ impl CoreSupervisor {
     }
 
     pub fn submit_text(&self, text: String) -> Result<String, String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Err("Command cannot be empty".to_string());
-        }
-        if trimmed.len() > CORE_TEXT_MAX_LEN {
-            return Err("Command is too long".to_string());
-        }
-        if self.stop.load(Ordering::Acquire) {
-            return Err("NAVEEN Core is stopped".to_string());
+        let text = text.trim().to_string();
+        if text.is_empty() || text.len() > CORE_TEXT_MAX_LEN {
+            return Err("command is empty or too large".to_string());
         }
         if !self.connected.load(Ordering::Acquire) {
             return Err("NAVEEN Core is not connected".to_string());
         }
 
-        let Some(command_tx) = &self.command_tx else {
-            return Err("NAVEEN Core is unavailable".to_string());
-        };
-
-        let id = self.next_command_id.fetch_add(1, Ordering::Relaxed);
-        let correlation_id = format!("ui-text-{id}");
-        command_tx
+        let correlation_id = format!("ui-{}", self.next_command_id.fetch_add(1, Ordering::Relaxed));
+        self.command_tx
+            .as_ref()
+            .ok_or_else(|| "NAVEEN Core is disabled".to_string())?
             .try_send(HostCommand {
                 correlation_id: correlation_id.clone(),
                 text,
             })
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => "NAVEEN Core command queue is full".to_string(),
-                mpsc::TrySendError::Disconnected(_) => "NAVEEN Core stopped".to_string(),
-            })?;
-
+            .map_err(|_| "NAVEEN Core command queue is full".to_string())?;
         Ok(correlation_id)
     }
 
@@ -267,9 +254,9 @@ impl Drop for CoreSupervisor {
 fn supervisor_loop(
     config: CoreLaunchConfig,
     launcher: Arc<dyn CoreProcessLauncher>,
-    stop: Arc<AtomicBool>,
-    command_rx: Receiver<HostCommand>,
     app_handle: AppHandle,
+    command_rx: Receiver<HostCommand>,
+    stop: Arc<AtomicBool>,
     connected: Arc<AtomicBool>,
 ) {
     let mut auth = match AuthenticationServer::new() {
@@ -280,60 +267,21 @@ fn supervisor_loop(
         }
     };
 
-    let security = SecurityGateway::new(vec![
-        CapabilityPolicy::new(
-            SYSTEM_TELEMETRY_READ,
-            vec![Permission::SystemTelemetryRead],
-            RiskLevel::Low,
-        ),
-        CapabilityPolicy::new(
-            FILESYSTEM_READ_TEXT,
-            vec![Permission::FilesystemRead],
-            RiskLevel::Medium,
-        ),
-        CapabilityPolicy::new(
-            MODEL_COMPLETE,
-            vec![Permission::NetworkAccess],
-            RiskLevel::Medium,
-        ),
-        CapabilityPolicy::new(
-            NETWORK_FETCH_TEXT,
-            vec![Permission::NetworkAccess],
-            RiskLevel::High,
-        ),
-    ]);
-    let capabilities = HostCapabilityRegistry::new(
-        config.workspace_root.clone(),
-        NetworkGateway::from_env(),
-    );
     let mut backoff = CORE_RECONNECT_INITIAL;
 
     while !stop.load(Ordering::Acquire) {
-        let _ = emit_core_event(&app_handle, "core.status", "host-status-connecting", json!({
-            "state": "connecting"
-        }));
-
         match run_connection(
             &config,
             launcher.as_ref(),
+            &app_handle,
+            &command_rx,
             &stop,
             &mut auth,
-            &command_rx,
-            &app_handle,
-            &security,
-            &capabilities,
-            &connected,
         ) {
             Ok(()) => backoff = CORE_RECONNECT_INITIAL,
             Err(error) => {
                 connected.store(false, Ordering::Release);
                 auth.invalidate_all_sessions(now_ms());
-                let _ = emit_core_event(
-                    &app_handle,
-                    "core.status",
-                    "host-status-disconnected",
-                    json!({ "state": "disconnected" }),
-                );
                 log_core_failure(&error);
             }
         }
@@ -348,37 +296,25 @@ fn supervisor_loop(
 
     connected.store(false, Ordering::Release);
     auth.invalidate_all_sessions(now_ms());
-    let _ = emit_core_event(
-        &app_handle,
-        "core.status",
-        "host-status-stopped",
-        json!({ "state": "stopped" }),
-    );
     log::info!("NAVEEN Core supervisor stopped");
 }
 
 fn run_connection(
     config: &CoreLaunchConfig,
     launcher: &dyn CoreProcessLauncher,
+    app_handle: &AppHandle,
+    command_rx: &Receiver<HostCommand>,
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
-    command_rx: &Receiver<HostCommand>,
-    app_handle: &AppHandle,
-    security: &SecurityGateway,
-    capabilities: &HostCapabilityRegistry,
-    connected: &Arc<AtomicBool>,
 ) -> Result<(), CoreSupervisorError> {
     let mut process = launcher.launch(config)?;
     let result = establish_and_run(
         config,
         &mut *process,
+        app_handle,
+        command_rx,
         stop,
         auth,
-        command_rx,
-        app_handle,
-        security,
-        capabilities,
-        connected,
     );
     process.shutdown();
     result
@@ -387,13 +323,10 @@ fn run_connection(
 fn establish_and_run(
     config: &CoreLaunchConfig,
     process: &mut dyn ManagedCoreProcess,
+    app_handle: &AppHandle,
+    command_rx: &Receiver<HostCommand>,
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
-    command_rx: &Receiver<HostCommand>,
-    app_handle: &AppHandle,
-    security: &SecurityGateway,
-    capabilities: &HostCapabilityRegistry,
-    connected: &Arc<AtomicBool>,
 ) -> Result<(), CoreSupervisorError> {
     let correlation_id = format!("core-auth-{}", now_ms());
 
@@ -457,248 +390,140 @@ fn establish_and_run(
         },
     )?;
 
-    connected.store(true, Ordering::Release);
-    let _ = emit_core_event(
-        app_handle,
-        "core.status",
-        "host-status-authenticated",
-        json!({ "state": "authenticated" }),
-    );
-
     log::info!("NAVEEN Core authenticated");
     heartbeat_loop(
         config,
         process,
+        app_handle,
+        command_rx,
         stop,
         auth,
         &session,
-        command_rx,
-        app_handle,
-        security,
-        capabilities,
     )
 }
 
 fn heartbeat_loop(
     config: &CoreLaunchConfig,
     process: &mut dyn ManagedCoreProcess,
+    app_handle: &AppHandle,
+    command_rx: &Receiver<HostCommand>,
     stop: &Arc<AtomicBool>,
     auth: &mut AuthenticationServer,
     session: &AuthenticatedSession,
-    command_rx: &Receiver<HostCommand>,
-    app_handle: &AppHandle,
-    security: &SecurityGateway,
-    capabilities: &HostCapabilityRegistry,
 ) -> Result<(), CoreSupervisorError> {
-    let mut last_core_event_sequence = 0_u64;
-    let mut outbound_sequence = 0_u64;
-    let mut command_in_flight = false;
+    let registry = HostCapabilityRegistry::new(config.workspace_root.clone());
+    let security = SecurityGateway::new(vec![
+        CapabilityPolicy::new(
+            SYSTEM_TELEMETRY_READ,
+            vec![Permission::SystemTelemetryRead],
+            RiskLevel::Low,
+        ),
+        CapabilityPolicy::new(
+            FILESYSTEM_READ_TEXT,
+            vec![Permission::FilesystemRead],
+            RiskLevel::Medium,
+        ),
+        CapabilityPolicy::new(
+            MODEL_COMPLETE,
+            vec![Permission::NetworkAccess],
+            RiskLevel::Medium,
+        ),
+        CapabilityPolicy::new(
+            NETWORK_FETCH_TEXT,
+            vec![Permission::NetworkAccess],
+            RiskLevel::Medium,
+        ),
+    ]);
+    let mut sequence = 1_u64;
+    let mut missed_heartbeats = 0_u32;
 
-    while !stop.load(Ordering::Acquire) {
-        if !command_in_flight {
-            match command_rx.try_recv() {
-                Ok(command) => {
-                    outbound_sequence = outbound_sequence.saturating_add(1);
-                    send_host_event(
-                        process.transport(),
-                        session,
-                        outbound_sequence,
-                        &format!("input-{}", outbound_sequence),
-                        "core.input.text",
-                        json!({
-                            "correlation_id": command.correlation_id,
-                            "text": command.text,
-                        }),
-                    )?;
-                    command_in_flight = true;
-                }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => {}
-            }
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
         }
-
         if !process.is_running()? {
             return Err(CoreSupervisorError::ChildExited);
         }
 
+        while let Ok(command) = command_rx.try_recv() {
+            send_host_command(process.transport(), auth, session, sequence, &command)?;
+            sequence = sequence.saturating_add(1);
+        }
+
         match process
             .transport()
-            .recv_frame(config.heartbeat_timeout.min(Duration::from_millis(250)))
+            .recv_frame(config.heartbeat_timeout.min(Duration::from_secs(2)))
         {
             Ok(frame) => {
+                missed_heartbeats = 0;
                 let envelope = decode_frame(&crate::ipc::JsonIpcCodec, &frame)
                     .map_err(|_| CoreSupervisorError::Protocol)?;
-
-                match envelope {
-                    IpcEnvelope::Request(request) => {
-                        handle_core_request(process.transport(), auth, session, request)?;
-                    }
-                    IpcEnvelope::Event(event) => {
-                        if event.session_id != *session.session_id().as_bytes()
-                            || event.sequence <= last_core_event_sequence
-                        {
-                            return Err(CoreSupervisorError::Authentication);
-                        }
-                        last_core_event_sequence = event.sequence;
-
-                        let completed = matches!(
-                            event.event_type.as_str(),
-                            "core.response" | "core.error"
-                        );
-                        handle_core_event(
-                            process.transport(),
-                            session,
-                            &event,
-                            &mut outbound_sequence,
-                            app_handle,
-                            security,
-                            capabilities,
-                        )?;
-                        if completed {
-                            command_in_flight = false;
-                        }
-                    }
-                    IpcEnvelope::Response(_) => return Err(CoreSupervisorError::Protocol),
+                let request = match envelope {
+                    IpcEnvelope::Request(request) => request,
+                    _ => return Err(CoreSupervisorError::Protocol),
+                };
+                if handle_core_request(
+                    process.transport(),
+                    app_handle,
+                    auth,
+                    &security,
+                    &registry,
+                    session,
+                    request,
+                )? {
+                    continue;
                 }
             }
-            Err(IpcError::Timeout) => {}
+            Err(IpcError::Timeout) => {
+                missed_heartbeats += 1;
+                if missed_heartbeats >= 4 {
+                    return Err(CoreSupervisorError::HeartbeatTimeout);
+                }
+            }
             Err(_) => return Err(CoreSupervisorError::Transport),
         }
     }
-
-    Ok(())
 }
 
-fn handle_core_event(
+fn send_host_command(
     transport: &mut dyn IpcTransport,
-    session: &AuthenticatedSession,
-    event: &EventEnvelope,
-    outbound_sequence: &mut u64,
-    app_handle: &AppHandle,
-    security: &SecurityGateway,
-    capabilities: &HostCapabilityRegistry,
-) -> Result<(), CoreSupervisorError> {
-    match event.event_type.as_str() {
-        "core.status" | "core.response" | "core.error" => {
-            let payload: Value = serde_json::from_slice(&event.payload)
-                .map_err(|_| CoreSupervisorError::Protocol)?;
-            if !payload.is_object() {
-                return Err(CoreSupervisorError::Protocol);
-            }
-            emit_core_event(
-                app_handle,
-                &event.event_type,
-                &event.event_id,
-                payload,
-            )
-            .map_err(|_| CoreSupervisorError::Transport)
-        }
-        "capability.request" => {
-            let request: CapabilityRequestPayload = serde_json::from_slice(&event.payload)
-                .map_err(|_| CoreSupervisorError::Protocol)?;
-
-            if request.request_id.is_empty()
-                || request.request_id.len() > crate::ipc::IPC_MAX_EVENT_ID_LEN
-                || request.capability_id.is_empty()
-                || request.capability_id.len() > crate::ipc::IPC_MAX_EVENT_TYPE_LEN
-            {
-                return Err(CoreSupervisorError::Protocol);
-            }
-
-            *outbound_sequence = outbound_sequence.saturating_add(1);
-            let result = execute_capability(security, capabilities, session, &request);
-
-            send_host_event(
-                transport,
-                session,
-                *outbound_sequence,
-                &format!("capability-result-{}", request.request_id),
-                "capability.result",
-                match result {
-                    Ok(output) => json!({
-                        "request_id": request.request_id,
-                        "capability_id": request.capability_id,
-                        "ok": true,
-                        "output": output,
-                    }),
-                    Err(error) => json!({
-                        "request_id": request.request_id,
-                        "capability_id": request.capability_id,
-                        "ok": false,
-                        "output": {},
-                        "error": error,
-                    }),
-                },
-            )
-        }
-        _ => Err(CoreSupervisorError::Protocol),
-    }
-}
-
-fn execute_capability(
-    security: &SecurityGateway,
-    capabilities: &HostCapabilityRegistry,
-    session: &AuthenticatedSession,
-    request: &CapabilityRequestPayload,
-) -> Result<Value, String> {
-    let capability_request = CapabilityRequest {
-        capability_id: request.capability_id.clone(),
-    };
-
-    match security.authorize_at(now_ms(), Some(session), &capability_request, false) {
-        SecurityDecision::Allow => {
-            log::info!("NAVEEN capability allowed: {}", request.capability_id);
-            capabilities.execute(&request.capability_id, request.input.clone())
-        }
-        SecurityDecision::RequireConfirmation => {
-            log::warn!(
-                "NAVEEN capability requires confirmation: {}",
-                request.capability_id
-            );
-            Err("confirmation_required".to_string())
-        }
-        SecurityDecision::Deny(_) => {
-            log::warn!("NAVEEN capability denied: {}", request.capability_id);
-            Err("capability_denied".to_string())
-        }
-    }
-}
-
-fn emit_core_event(
-    app_handle: &AppHandle,
-    event_type: &str,
-    event_id: &str,
-    payload: Value,
-) -> Result<(), tauri::Error> {
-    app_handle.emit(
-        CORE_EVENT_NAME,
-        HostCoreEvent {
-            event_type: event_type.to_string(),
-            event_id: event_id.to_string(),
-            payload,
-        },
-    )
-}
-
-fn send_host_event(
-    transport: &mut dyn IpcTransport,
+    auth: &AuthenticationServer,
     session: &AuthenticatedSession,
     sequence: u64,
-    event_id: &str,
-    event_type: &str,
-    payload: Value,
+    command: &HostCommand,
 ) -> Result<(), CoreSupervisorError> {
-    let payload = serde_json::to_vec(&payload).map_err(|_| CoreSupervisorError::Protocol)?;
-    let envelope = IpcEnvelope::Event(EventEnvelope {
+    let payload = serde_json::to_vec(&json!({
+        "text": command.text,
+    }))
+    .map_err(|_| CoreSupervisorError::Protocol)?;
+    let request = RequestEnvelope {
         protocol_version: crate::ipc::IPC_PROTOCOL_VERSION,
-        event_id: event_id.to_string(),
+        correlation_id: command.correlation_id.clone(),
         session_id: *session.session_id().as_bytes(),
         sequence,
-        event_type: event_type.to_string(),
+        method: "core.input.text".to_string(),
         payload,
-        proof: None,
-    });
-    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &envelope)
+        proof: Vec::new(),
+    };
+    let material = canonical_message_material(&IpcEnvelope::Request(request.clone()))
         .map_err(|_| CoreSupervisorError::Protocol)?;
+    let proof = auth
+        .prove_session_message(
+            session,
+            crate::auth::AUTH_PROTOCOL_VERSION,
+            &request.correlation_id,
+            sequence,
+            &material,
+            now_ms(),
+        )
+        .map_err(|_| CoreSupervisorError::Authentication)?;
+    let mut signed_request = request;
+    signed_request.proof = proof.to_vec();
+    let frame = encode_frame(
+        &crate::ipc::JsonIpcCodec,
+        &IpcEnvelope::Request(signed_request),
+    )
+    .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
         .send_frame(&frame)
         .map_err(|_| CoreSupervisorError::Transport)
@@ -706,10 +531,13 @@ fn send_host_event(
 
 fn handle_core_request(
     transport: &mut dyn IpcTransport,
+    app_handle: &AppHandle,
     auth: &mut AuthenticationServer,
+    security: &SecurityGateway,
+    registry: &HostCapabilityRegistry,
     session: &AuthenticatedSession,
     request: RequestEnvelope,
-) -> Result<(), CoreSupervisorError> {
+) -> Result<bool, CoreSupervisorError> {
     if request.session_id != *session.session_id().as_bytes() {
         return Err(CoreSupervisorError::Authentication);
     }
@@ -727,33 +555,88 @@ fn handle_core_request(
     )
     .map_err(|_| CoreSupervisorError::Authentication)?;
 
-    let (status, error_code, payload) =
-        if request.method == CORE_HEARTBEAT_METHOD && request.payload == CORE_HEARTBEAT_PAYLOAD {
-            (ResponseStatus::Ok, None, b"alive".to_vec())
-        } else {
-            (
-                ResponseStatus::Rejected,
-                Some("method_not_allowed".to_string()),
-                Vec::new(),
-            )
+    if request.method == CORE_HEARTBEAT_METHOD && request.payload == CORE_HEARTBEAT_PAYLOAD {
+        send_response(transport, session, request, ResponseStatus::Ok, None, b"alive".to_vec())?;
+        return Ok(true);
+    }
+
+    if request.method == "core.capability.request" {
+        let payload: CapabilityRequestPayload = serde_json::from_slice(&request.payload)
+            .map_err(|_| CoreSupervisorError::Protocol)?;
+        let capability_request = CapabilityRequest {
+            capability_id: payload.capability_id.clone(),
+        };
+        let decision = security.authorize_at(
+            now_ms(),
+            Some(session),
+            &capability_request,
+            false,
+        );
+
+        let response_payload = match decision {
+            SecurityDecision::Allow => match registry.execute(&payload.capability_id, payload.input) {
+                Ok(value) => json!({
+                    "request_id": payload.request_id,
+                    "capability_id": payload.capability_id,
+                    "ok": true,
+                    "result": value,
+                }),
+                Err(error) => json!({
+                    "request_id": payload.request_id,
+                    "capability_id": payload.capability_id,
+                    "ok": false,
+                    "error": error,
+                }),
+            },
+            SecurityDecision::RequireConfirmation => json!({
+                "request_id": payload.request_id,
+                "capability_id": payload.capability_id,
+                "ok": false,
+                "error": "confirmation_required",
+            }),
+            SecurityDecision::Deny(_) => json!({
+                "request_id": payload.request_id,
+                "capability_id": payload.capability_id,
+                "ok": false,
+                "error": "capability_denied",
+            }),
         };
 
+        let _ = app_handle;
+        send_response(
+            transport,
+            session,
+            request,
+            ResponseStatus::Ok,
+            None,
+            serde_json::to_vec(&response_payload).map_err(|_| CoreSupervisorError::Protocol)?,
+        )?;
+        return Ok(true);
+    }
+
+    Err(CoreSupervisorError::Protocol)
+}
+
+fn send_response(
+    transport: &mut dyn IpcTransport,
+    session: &AuthenticatedSession,
+    request: RequestEnvelope,
+    status: ResponseStatus,
+    error_code: Option<String>,
+    payload: Vec<u8>,
+) -> Result<(), CoreSupervisorError> {
     let response = ResponseEnvelope {
         protocol_version: crate::ipc::IPC_PROTOCOL_VERSION,
         correlation_id: request.correlation_id,
-        session_id: request.session_id,
+        session_id: *session.session_id().as_bytes(),
         sequence: request.sequence,
         status,
         error_code,
         payload,
         proof: None,
     };
-
-    let frame = encode_frame(
-        &crate::ipc::JsonIpcCodec,
-        &IpcEnvelope::Response(response),
-    )
-    .map_err(|_| CoreSupervisorError::Protocol)?;
+    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &IpcEnvelope::Response(response))
+        .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
         .send_frame(&frame)
         .map_err(|_| CoreSupervisorError::Transport)
@@ -851,15 +734,11 @@ fn recv_control<T: DeserializeOwned>(
 }
 
 fn array_16(value: &[u8]) -> Result<[u8; 16], CoreSupervisorError> {
-    value
-        .try_into()
-        .map_err(|_| CoreSupervisorError::Handshake)
+    value.try_into().map_err(|_| CoreSupervisorError::Handshake)
 }
 
 fn array_32(value: &[u8]) -> Result<[u8; 32], CoreSupervisorError> {
-    value
-        .try_into()
-        .map_err(|_| CoreSupervisorError::Handshake)
+    value.try_into().map_err(|_| CoreSupervisorError::Handshake)
 }
 
 fn sleep_interruptible(stop: &AtomicBool, duration: Duration) {
@@ -931,26 +810,19 @@ impl WindowsCoreProcess {
             .map(Path::to_path_buf)
             .ok_or(CoreSupervisorError::ProcessLaunch)?;
 
-        if let Some(parent) = config.memory_db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| CoreSupervisorError::ProcessLaunch)?;
-        }
-
         let mut command = Command::new(&config.python_executable);
         command
             .arg("-E")
             .arg("-s")
             .arg(&config.script_path)
+            .arg("--memory-db")
+            .arg(&config.memory_db_path)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::null())
             .env_clear()
-            .env("NAVEEN_MEMORY_DB", &config.memory_db_path)
             .current_dir(working_dir)
             .creation_flags(CREATE_NO_WINDOW);
-
-        if let Some(workspace_root) = &config.workspace_root {
-            command.env("NAVEEN_WORKSPACE_ROOT", workspace_root);
-        }
 
         for variable in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
             if let Some(value) = std::env::var_os(variable) {
