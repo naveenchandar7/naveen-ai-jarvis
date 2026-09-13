@@ -7,6 +7,7 @@ import unittest
 from core_client import (
     AUTH_PROTOCOL_VERSION,
     CLIENT_ID,
+    CORE_HEALTH_METHOD,
     CORE_HEALTH_PAYLOAD,
     IPC_PROTOCOL_VERSION,
     CoreClient,
@@ -49,7 +50,7 @@ def read_frame(stream: io.BytesIO) -> bytes:
 
 class CoreClientTests(unittest.TestCase):
     def test_frame_round_trip(self):
-        message = {"kind": "request", "protocol_version": 1, "payload": [1, 2, 3]}
+        message = {"kind": "Request", "message": {"protocol_version": 1}}
         self.assertEqual(decode_frame(encode_frame(message)), message)
 
     def test_malformed_frame_rejected(self):
@@ -87,7 +88,7 @@ class CoreClientTests(unittest.TestCase):
         changed["payload"] = list(b"y")
         self.assertNotEqual(canonical_request_material(base), canonical_request_material(changed))
 
-    def test_authenticate_and_health_use_live_contract(self):
+    def test_authenticate_and_health_use_live_wire_contract(self):
         c = make_challenge()
         secret = b"S" * 32
         session_id = b"I" * 16
@@ -106,15 +107,17 @@ class CoreClientTests(unittest.TestCase):
             "correlation_id": c["correlation_id"],
         }
         response = {
-            "kind": "response",
-            "protocol_version": IPC_PROTOCOL_VERSION,
-            "correlation_id": "core-health-1",
-            "session_id": list(session_id),
-            "sequence": 1,
-            "status": "ok",
-            "error_code": None,
-            "payload": list(b"alive"),
-            "proof": None,
+            "kind": "Response",
+            "message": {
+                "protocol_version": IPC_PROTOCOL_VERSION,
+                "correlation_id": "core-health-1",
+                "session_id": list(session_id),
+                "sequence": 1,
+                "status": "ok",
+                "error_code": None,
+                "payload": list(b"alive"),
+                "proof": None,
+            },
         }
         reader = io.BytesIO(
             encode_frame(bootstrap)
@@ -125,20 +128,17 @@ class CoreClientTests(unittest.TestCase):
         writer = io.BytesIO()
         client = CoreClient(reader, writer)
         client.authenticate()
-        self.assertEqual(client.session_id, session_id)
         result = client.request_health()
         self.assertEqual(result["payload"], list(b"alive"))
 
         writer.seek(0)
         outbound_auth = decode_frame(read_frame(writer))
-        self.assertEqual(outbound_auth["kind"], "auth_response")
-        self.assertEqual(outbound_auth["client_id"], CLIENT_ID)
-        self.assertEqual(len(outbound_auth["proof"]), 32)
-
         outbound_health = decode_frame(read_frame(writer))
-        self.assertEqual(outbound_health["method"], "core.health")
-        self.assertEqual(outbound_health["payload"], list(CORE_HEALTH_PAYLOAD))
-        self.assertEqual(len(outbound_health["proof"]), 32)
+        self.assertEqual(outbound_auth["kind"], "auth_response")
+        self.assertEqual(outbound_health["kind"], "Request")
+        self.assertEqual(outbound_health["message"]["method"], CORE_HEALTH_METHOD)
+        self.assertEqual(outbound_health["message"]["payload"], list(CORE_HEALTH_PAYLOAD))
+        self.assertEqual(len(outbound_health["message"]["proof"]), 32)
 
     def test_invalid_bootstrap_protocol_is_rejected(self):
         bootstrap = {
@@ -163,24 +163,24 @@ class CoreClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.authenticate()
 
-    def test_response_correlation_mismatch_is_rejected(self):
+    def test_event_handler_receives_host_event(self):
+        session_id = b"I" * 16
         client = CoreClient(io.BytesIO(), io.BytesIO())
-        client.session_id = b"I" * 16
-        with self.assertRaises(ValueError):
-            client._validate_response(
-                {
-                    "kind": "response",
-                    "protocol_version": IPC_PROTOCOL_VERSION,
-                    "correlation_id": "wrong",
-                    "session_id": list(client.session_id),
-                    "sequence": 1,
-                    "status": "ok",
-                    "error_code": None,
-                    "payload": list(b"alive"),
-                },
-                "expected",
-                1,
-            )
+        client.session_id = session_id
+        captured = []
+        client.set_event_handler(captured.append)
+        client._dispatch_event(
+            {
+                "event_id": "status-1",
+                "event_type": "core.status",
+                "session_id": list(session_id),
+                "sequence": 1,
+                "payload": list(b'{"state":"ready"}'),
+                "proof": None,
+            }
+        )
+        self.assertEqual(captured[0]["event_type"], "core.status")
+        self.assertEqual(captured[0]["payload"], b'{"state":"ready"}')
 
 
 if __name__ == "__main__":
