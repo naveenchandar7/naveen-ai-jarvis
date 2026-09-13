@@ -49,6 +49,17 @@ fn get_system_info() -> device_gateway::SystemInfo {
 }
 
 #[tauri::command]
+fn get_core_status(
+    supervisor: State<'_, core_supervisor::CoreSupervisor>,
+) -> &'static str {
+    if supervisor.is_connected() {
+        "connected"
+    } else {
+        "connecting"
+    }
+}
+
+#[tauri::command]
 fn submit_text(
     text: String,
     supervisor: State<'_, core_supervisor::CoreSupervisor>,
@@ -165,6 +176,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_system_info,
+            get_core_status,
             submit_text,
             start_voice,
             stop_voice,
