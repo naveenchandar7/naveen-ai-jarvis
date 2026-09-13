@@ -26,7 +26,6 @@ mod core_supervisor;
 mod device_gateway;
 #[expect(
     dead_code,
-    clippy::useless_borrows_in_formatting,
     reason = "IPC retains replaceable transport/audit abstractions whose public surface is exercised incrementally by the live runtime."
 )]
 mod ipc;
