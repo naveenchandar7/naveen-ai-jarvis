@@ -1,0 +1,1 @@
+Auth restoration is being handled through Git tree replacement from the known-good blob. This status file can be removed after the repair.
