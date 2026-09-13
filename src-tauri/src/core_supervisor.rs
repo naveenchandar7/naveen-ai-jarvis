@@ -2,12 +2,10 @@ use crate::auth::{
     AuthChallenge, AuthenticatedSession, AuthenticationProvider, AuthenticationServer,
     ChallengeResponse, AUTH_PROTOCOL_VERSION,
 };
-use crate::capabilities::{
-    HostCapabilityRegistry, FILESYSTEM_READ_TEXT, SYSTEM_TELEMETRY_READ,
-};
+use crate::capabilities::{HostCapabilityRegistry, FILESYSTEM_READ_TEXT, SYSTEM_TELEMETRY_READ};
 use crate::ipc::{
-    canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope,
-    IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
+    canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope, IpcError,
+    IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
 };
 use crate::network_gateway::{NetworkGateway, MODEL_COMPLETE, NETWORK_FETCH_TEXT};
 use crate::security::{
@@ -19,12 +17,12 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::path::BaseDirectory;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
 use crate::ipc::WindowsLocalPipeTransport;
@@ -215,7 +213,10 @@ impl CoreSupervisor {
             return Err("NAVEEN Core is not connected".to_string());
         }
 
-        let correlation_id = format!("ui-{}", self.next_command_id.fetch_add(1, Ordering::Relaxed));
+        let correlation_id = format!(
+            "ui-{}",
+            self.next_command_id.fetch_add(1, Ordering::Relaxed)
+        );
         self.command_tx
             .as_ref()
             .ok_or_else(|| "NAVEEN Core is disabled".to_string())?
@@ -411,7 +412,10 @@ fn heartbeat_loop(
     auth: &mut AuthenticationServer,
     session: &AuthenticatedSession,
 ) -> Result<(), CoreSupervisorError> {
-    let registry = HostCapabilityRegistry::new(config.workspace_root.clone());
+    let registry = HostCapabilityRegistry::new(
+        config.workspace_root.clone(),
+        NetworkGateway::default(),
+    );
     let security = SecurityGateway::new(vec![
         CapabilityPolicy::new(
             SYSTEM_TELEMETRY_READ,
@@ -446,7 +450,7 @@ fn heartbeat_loop(
         }
 
         while let Ok(command) = command_rx.try_recv() {
-            send_host_command(process.transport(), auth, session, sequence, &command)?;
+            send_host_command(process.transport(), session, sequence, &command)?;
             sequence = sequence.saturating_add(1);
         }
 
@@ -487,41 +491,28 @@ fn heartbeat_loop(
 
 fn send_host_command(
     transport: &mut dyn IpcTransport,
-    auth: &AuthenticationServer,
     session: &AuthenticatedSession,
     sequence: u64,
     command: &HostCommand,
 ) -> Result<(), CoreSupervisorError> {
     let payload = serde_json::to_vec(&json!({
+        "correlation_id": command.correlation_id,
         "text": command.text,
     }))
     .map_err(|_| CoreSupervisorError::Protocol)?;
-    let request = RequestEnvelope {
+
+    let event = EventEnvelope {
         protocol_version: crate::ipc::IPC_PROTOCOL_VERSION,
-        correlation_id: command.correlation_id.clone(),
+        event_id: command.correlation_id.clone(),
         session_id: *session.session_id().as_bytes(),
         sequence,
-        method: "core.input.text".to_string(),
+        event_type: "core.input.text".to_string(),
         payload,
-        proof: Vec::new(),
+        proof: None,
     };
-    let material = canonical_message_material(&IpcEnvelope::Request(request.clone()))
-        .map_err(|_| CoreSupervisorError::Protocol)?;
-    let proof = auth
-        .prove_session_message(
-            session,
-            crate::auth::AUTH_PROTOCOL_VERSION,
-            &request.correlation_id,
-            sequence,
-            &material,
-            now_ms(),
-        )
-        .map_err(|_| CoreSupervisorError::Authentication)?;
-    let mut signed_request = request;
-    signed_request.proof = proof.to_vec();
     let frame = encode_frame(
         &crate::ipc::JsonIpcCodec,
-        &IpcEnvelope::Request(signed_request),
+        &IpcEnvelope::Event(event),
     )
     .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
@@ -556,13 +547,20 @@ fn handle_core_request(
     .map_err(|_| CoreSupervisorError::Authentication)?;
 
     if request.method == CORE_HEARTBEAT_METHOD && request.payload == CORE_HEARTBEAT_PAYLOAD {
-        send_response(transport, session, request, ResponseStatus::Ok, None, b"alive".to_vec())?;
+        send_response(
+            transport,
+            session,
+            request,
+            ResponseStatus::Ok,
+            None,
+            b"alive".to_vec(),
+        )?;
         return Ok(true);
     }
 
     if request.method == "core.capability.request" {
-        let payload: CapabilityRequestPayload = serde_json::from_slice(&request.payload)
-            .map_err(|_| CoreSupervisorError::Protocol)?;
+        let payload: CapabilityRequestPayload =
+            serde_json::from_slice(&request.payload).map_err(|_| CoreSupervisorError::Protocol)?;
         let capability_request = CapabilityRequest {
             capability_id: payload.capability_id.clone(),
         };
@@ -574,20 +572,22 @@ fn handle_core_request(
         );
 
         let response_payload = match decision {
-            SecurityDecision::Allow => match registry.execute(&payload.capability_id, payload.input) {
-                Ok(value) => json!({
-                    "request_id": payload.request_id,
-                    "capability_id": payload.capability_id,
-                    "ok": true,
-                    "result": value,
-                }),
-                Err(error) => json!({
-                    "request_id": payload.request_id,
-                    "capability_id": payload.capability_id,
-                    "ok": false,
-                    "error": error,
-                }),
-            },
+            SecurityDecision::Allow => {
+                match registry.execute(&payload.capability_id, payload.input) {
+                    Ok(value) => json!({
+                        "request_id": payload.request_id,
+                        "capability_id": payload.capability_id,
+                        "ok": true,
+                        "result": value,
+                    }),
+                    Err(error) => json!({
+                        "request_id": payload.request_id,
+                        "capability_id": payload.capability_id,
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            }
             SecurityDecision::RequireConfirmation => json!({
                 "request_id": payload.request_id,
                 "capability_id": payload.capability_id,
@@ -635,8 +635,11 @@ fn send_response(
         payload,
         proof: None,
     };
-    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &IpcEnvelope::Response(response))
-        .map_err(|_| CoreSupervisorError::Protocol)?;
+    let frame = encode_frame(
+        &crate::ipc::JsonIpcCodec,
+        &IpcEnvelope::Response(response),
+    )
+    .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
         .send_frame(&frame)
         .map_err(|_| CoreSupervisorError::Transport)
