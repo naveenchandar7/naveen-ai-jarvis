@@ -1,11 +1,13 @@
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
 use serde::Serialize;
-use sysinfo::System;
 use std::time::Duration;
+use sysinfo::System;
 use tauri::Emitter;
+use tauri::Manager;
 
 mod auth;
+mod core_supervisor;
 mod ipc;
 mod security;
 
@@ -38,16 +40,14 @@ fn system_info_from(system: &System) -> SystemInfo {
         cpu_usage: system.global_cpu_usage(),
         memory_used: system.used_memory(),
         memory_total: system.total_memory(),
-        os_name: System::name()
-            .unwrap_or_else(|| "Unknown".to_string()),
-        os_version: System::os_version()
-            .unwrap_or_else(|| "Unknown".to_string()),
+        os_name: System::name().unwrap_or_else(|| "Unknown".to_string()),
+        os_version: System::os_version().unwrap_or_else(|| "Unknown".to_string()),
         uptime: System::uptime(),
     }
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -55,6 +55,24 @@ pub fn run() {
                         .level(log::LevelFilter::Info)
                         .build(),
                 )?;
+            }
+
+            #[cfg(windows)]
+            {
+                match core_supervisor::CoreLaunchConfig::from_app(app.handle()) {
+                    Ok(config) => {
+                        app.manage(core_supervisor::CoreSupervisor::start(config));
+                    }
+                    Err(_) => {
+                        log::warn!("NAVEEN Core unavailable: local Core resource not configured");
+                        app.manage(core_supervisor::CoreSupervisor::disabled());
+                    }
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                app.manage(core_supervisor::CoreSupervisor::disabled());
             }
 
             let app_handle = app.handle().clone();
@@ -69,10 +87,7 @@ pub fn run() {
                     system.refresh_memory();
 
                     if app_handle
-                        .emit(
-                            SYSTEM_TELEMETRY_EVENT,
-                            system_info_from(&system),
-                        )
+                        .emit(SYSTEM_TELEMETRY_EVENT, system_info_from(&system))
                         .is_err()
                     {
                         break;
@@ -84,9 +99,15 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            get_system_info
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![get_system_info])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            app_handle
+                .state::<core_supervisor::CoreSupervisor>()
+                .shutdown_and_join();
+        }
+    });
 }

@@ -5,69 +5,73 @@ The master architecture and `AGENTS.md` remain the architectural source of truth
 ## Starting checkpoint
 
 - Requested baseline: `m0-secure-baseline` / `089c14c`
-- Actual repository was re-inspected before changes.
-- The repository had already moved through the Core-authentication milestone and contained `src-tauri/src/auth.rs` plus the Rust-owned authorization policy in `src-tauri/src/security.rs`.
+- The actual repository is re-inspected before each milestone; older audits are not treated as current state.
 
 ## Completed: Core Authentication / Session Boundary
 
-The existing auth milestone provides a per-launch host secret, challenge/response, authenticated sessions, expiry/revocation, replay protection, and sanitized audit events. This milestone deliberately reused that design and did not replace it.
+The auth milestone provides a per-launch host secret, challenge/response, authenticated sessions, expiry/revocation, replay protection, and sanitized audit events. The session ID is an identifier only; the host authenticates requests using the in-memory session state and proof verification.
 
 ## Completed: Secure Rust↔Python IPC Foundation
 
-### Scope completed
+Established the versioned message contracts, framing, codec/transport interfaces, strict correlation tracking, authenticated request verification, replay protection, bounded audit metadata, and a Windows-local anonymous-pipe transport. The transport layer remains independent from the authentication implementation.
 
-- Versioned IPC protocol contract (`IPC_PROTOCOL_VERSION = 1`)
-- Explicit request, response, and event envelopes
-- Length-delimited framing with bounded frame/payload sizes
-- Codec abstraction (`IpcCodec`) with JSON as the current replaceable implementation
-- Transport abstraction (`IpcTransport`)
-- Windows local transport using anonymous inherited pipe handles (`WindowsLocalPipeTransport`)
-- Correlation/request tracking (`PendingRequests`)
-- Existing `AuthenticatedSession` + `AuthenticationProvider` validation for Core-originated requests
-- Protocol/session/sequence validation before request acceptance
-- Fail-closed behavior for malformed/auth-invalid messages
-- Receive timeout and clean/idempotent shutdown behavior
-- Bounded, audit-safe in-memory IPC events with no payload/proof/secret logging
-- Rust host module registration only; no live Python connection or process launch
+## Completed: Live Rust↔Python Core Connection
 
-### Important security properties
+The repository now contains the first real supervised Python Core skeleton and the Rust host-side lifecycle for it.
+
+### Implemented
+
+- `core/naveen_core/core_client.py` — Python client for the existing auth + IPC contracts.
+- `core/naveen_core/main.py` — minimal Core process that authenticates and sends `core.health` heartbeats.
+- `src-tauri/src/core_supervisor.rs` — replaceable process-launch interface plus Rust supervisor implementation.
+- Existing `AuthenticationServer` is reused; no second token/session/authentication system is introduced.
+- Per-launch bootstrap sends the existing host-created secret over the private child stdin pipe only after the child is launched.
+- Windows child stdin/stdout are bound to the existing anonymous pipe transport; no TCP listener is created.
+- Python child environment is cleared and only minimal Windows runtime variables are restored; the authentication secret is not passed through environment variables or command-line arguments.
+- Successful challenge/response establishes the existing authenticated session, after which request proofs are verified by the existing authentication provider.
+- Only `core.health` + `heartbeat` is accepted in this milestone; all other methods are rejected.
+- Heartbeat timeout, child exit, authentication failure, protocol failure, and transport failure all close the connection, invalidate the session, terminate/wait for the child, and retry with capped exponential backoff.
+- Tauri application exit signals the supervisor to stop and joins the supervisor thread before process shutdown completes.
+- `tauri.conf.json` now bundles the `core/` directory as an application resource for release packaging.
+
+### Security boundary preserved
 
 ```text
-React → Rust only
-Python Core → authenticated IPC request → Rust
-Python Core → Capability Request → Security Gateway → Device Gateway → OS/device
+React / Three.js
+        ↓ Tauri IPC only
+Rust / Tauri host
+        ↓ authenticated local IPC
+Python Core
+        ↓ future capability requests only
+Security Gateway
+        ↓
+Rust Device Gateway
+        ↓
+OS / device
 ```
 
-The IPC layer does not expose shell, filesystem, process, browser, microphone, MCP, or other capabilities.
+The live connection exposes no shell, filesystem, browser, process, MCP, microphone, model, or provider capability to Python.
 
-The request proof is verified by the pre-existing authentication/session boundary. The session ID is never treated as authentication by itself.
+## Tests and verification
 
-## Tests added in code
+### Executed in this environment
 
-The IPC unit tests cover:
+Python-side contract tests were executed locally against the same protocol shapes used by the new Core skeleton:
 
-- frame round-trip;
-- malformed length prefix;
-- unsupported protocol version;
-- malformed request proof;
-- valid authenticated request acceptance;
-- request replay rejection through sequence validation;
-- expired-session/auth rejection and connection close;
-- session mismatch rejection;
-- exact response correlation/sequence matching;
-- wrong response sequence without consuming pending state;
-- explicit receive timeout;
-- idempotent shutdown;
-- codec-independent canonical message material changes by message kind;
-- audit output excludes payload/proof material.
+```text
+python -m py_compile core_client.py test_core_client.py
+python -m unittest -v
+```
 
-## Verification status
+Result: **9 tests passed**.
 
-Repository static inspection and code review were performed through the connected GitHub repository.
+The executed tests cover frame validation, canonical auth/session material, proof sequence binding, request material binding, successful auth + health contract, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
 
-**Local runtime test execution: not performed in this environment.** The available environment does not contain a Rust/Cargo toolchain, so no `cargo test`, `cargo fmt`, `cargo clippy`, or Windows runtime verification is claimed.
+### Not executed here
 
-Required local verification on the Windows development machine:
+The environment does not contain a Rust/Cargo toolchain or Windows runtime, so no `cargo test`, `cargo fmt`, `cargo clippy`, `cargo build`, or live Windows child-process smoke test is claimed.
+
+Required local Windows verification:
 
 ```text
 cargo fmt --check
@@ -76,20 +80,28 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo build
 ```
 
-A Windows smoke test is also required for `WindowsLocalPipeTransport::create_for_child()` and inherited-handle transfer once the Python process supervisor is introduced.
+Then run the Tauri desktop application and verify:
+
+1. Rust launches the bundled/configured Python Core.
+2. Bootstrap reaches only the child stdin pipe.
+3. Challenge/response establishes the existing session.
+4. `core.health` heartbeats remain stable.
+5. Killing the Core causes clean detection, session invalidation, child cleanup, and reconnect backoff.
+6. Closing the Tauri app terminates the child and releases pipe handles.
+7. A malformed, replayed, expired, or unauthorized request is rejected and the connection fails closed.
 
 ## Explicitly deferred
 
-- Rust Python-process launch/supervision
-- authentication-secret bootstrap transfer to Python
-- live Rust↔Python transport wiring
-- Python Core
+- user authentication implementation
+- richer Python Core cognition/orchestration
+- Rust↔Python capability execution
 - STT/VAD/LLM/TTS
 - MCP
-- memory/research/tool implementations
-- browser/computer/filesystem capabilities
-- React↔Python communication
+- memory/research
+- browser/computer/filesystem tools
+- provider/runtime selection
+- cross-device adapters
 
 ## Next milestone boundary
 
-The next IPC/runtime milestone may connect the existing authenticated session to the Rust process supervisor and a Python client using these contracts. It must not create a second authentication mechanism, expose unrestricted OS access, or bypass the Security Gateway.
+The next milestone may expand the live connection into the real Python Core orchestration layer and a capability request path, but only through the existing authenticated/versioned IPC and Security Gateway. No privileged capability may be added by bypassing Rust authorization, and no new authentication or token scheme may be introduced.
