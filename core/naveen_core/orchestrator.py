@@ -179,4 +179,7 @@ class Orchestrator:
                 {"topic": topic, "available": False},
             )
 
-        return CoreResponse(correlation_id, self.models.complete(intent.argument))
+        return CoreResponse(
+            correlation_id,
+            self.models.complete(intent.argument, capability_requester),
+        )
