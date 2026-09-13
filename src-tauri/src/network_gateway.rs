@@ -19,7 +19,13 @@ impl NetworkGateway {
         let allowlist = std::env::var("NAVEEN_NETWORK_ALLOWLIST")
             .ok()
             .into_iter()
-            .flat_map(|value| value.split(',').map(str::trim).map(str::to_string))
+            .flat_map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
             .filter_map(|entry| normalize_origin(&entry))
             .collect();
 
