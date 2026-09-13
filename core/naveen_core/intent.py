@@ -40,11 +40,34 @@ def detect_intent(text: str) -> Intent:
             return Intent("memory.save", value[len(prefix) :].strip())
 
     if "what do you remember" in lowered or "nee enna nyabagam vechuruka" in lowered:
-        return Intent("memory.recall")
+        about = ""
+        for marker in ("what do you remember about ", "nee enna nyabagam vechuruka "):
+            if lowered.startswith(marker):
+                about = value[len(marker) :].strip()
+                break
+        return Intent("memory.recall", about)
 
     for prefix in ("forget ", "forget this ", "marnthudu ", "maranthudu "):
         if lowered.startswith(prefix):
             return Intent("memory.forget", value[len(prefix) :].strip())
+
+    for prefix in (
+        "read file ",
+        "open file ",
+        "check file ",
+        "read this file ",
+    ):
+        if lowered.startswith(prefix):
+            return Intent("file.read", value[len(prefix) :].strip())
+
+    for prefix in (
+        "search my files ",
+        "search my documents ",
+        "find in my files ",
+        "find in my documents ",
+    ):
+        if lowered.startswith(prefix):
+            return Intent("knowledge.search", value[len(prefix) :].strip())
 
     if any(
         phrase in lowered
@@ -55,6 +78,8 @@ def detect_intent(text: str) -> Intent:
             "system information",
             "my pc status",
             "system info",
+            "pc epdi iruku",
+            "computer epdi iruku",
         )
     ):
         return Intent("system.status")
