@@ -17,69 +17,97 @@ Established the versioned message contracts, framing, codec/transport interfaces
 
 ## Completed: Live Rust↔Python Core Connection
 
-The repository contains the first supervised Python Core skeleton and Rust host-side lifecycle for it.
+The repository contains the first supervised Python Core process and Rust host-side lifecycle for it.
 
 ### Implemented
 
 - `core/naveen_core/core_client.py` — Python client for the existing auth + IPC contracts.
-- `core/naveen_core/main.py` — minimal Core process that authenticates and sends `core.health` heartbeats.
+- `core/naveen_core/main.py` — supervised Core process entry point.
 - `src-tauri/src/core_supervisor.rs` — replaceable process-launch interface plus Rust supervisor implementation.
 - Existing `AuthenticationServer` is reused; no second token/session/authentication system is introduced.
 - Per-launch bootstrap sends the existing host-created secret over the private child stdin pipe only after the child is launched.
 - Windows child stdin/stdout are bound to the existing anonymous pipe transport; no TCP listener is created.
-- Python child environment is cleared and only minimal Windows runtime variables are restored; the authentication secret is not passed through environment variables or command-line arguments.
+- Python child environment is cleared and only minimal Windows runtime variables are restored; authentication secrets are not passed through environment variables or command-line arguments.
 - Successful challenge/response establishes the existing authenticated session, after which request proofs are verified by the existing authentication provider.
-- Only `core.health` + `heartbeat` is accepted in this milestone; all other methods are rejected.
-- Heartbeat timeout, child exit, authentication failure, protocol failure, and transport failure all close the connection, invalidate the session, terminate/wait for the child, and retry with capped exponential backoff.
+- Heartbeat timeout, child exit, authentication failure, protocol failure, and transport failure close the connection, invalidate the session, terminate/wait for the child, and retry with capped exponential backoff.
 - Tauri application exit signals the supervisor to stop and joins the supervisor thread before process shutdown completes.
 - `tauri.conf.json` bundles the `core/` directory as an application resource for release packaging.
 
-## Compile/format repair: Rust authentication boundary
+## Completed: Core Orchestration / Command Vertical Slice
 
-- `LaunchId` and `ChallengeId` tuple fields remain private.
-- Added crate-visible `from_bytes` constructors for safe typed reconstruction.
-- `core_supervisor.rs` uses those constructors instead of directly constructing private tuple fields.
-- Removed the unused `AuthError` import from `core_supervisor.rs`.
-- Restored `auth.rs` to readable Rust formatting without changing authentication behavior.
-- Affected authentication tests use `assert!(matches!(...))`, so the opaque `AuthenticatedSession` type does not need `Debug` or `PartialEq`.
-- No authentication, authorization, IPC protocol, Windows transport, or unrelated subsystem redesign was made.
+The Python Core is no longer heartbeat-only. A real text-command path now crosses the locked React → Rust → authenticated Python architecture and returns a response to the HUD.
+
+### Implemented
+
+- Rust exposes `submit_text` as a Tauri command; React never talks directly to Python.
+- `CoreSupervisor` maintains a bounded host-to-Core command queue and only accepts commands while an authenticated Core session is connected.
+- Host commands are delivered to Python as authenticated-session IPC events.
+- Python Core accepts host text events, performs deterministic intent routing, and emits structured `core.status`, `core.response`, and `core.error` events.
+- Intent routing supports greeting, identity, help, explicit memory save/recall/forget, system status, research intent recognition, and a provider-independent conversation fallback.
+- `SQLiteMemoryStore` provides durable, explicit memory with namespaces, timestamps, provenance/source metadata, retrieval, correction-by-forget, and bounded inputs.
+- `ModelProvider` / `ModelManager` provide a replaceable model boundary; the current fallback provider is intentionally offline and deterministic rather than pretending a cloud/local model is installed.
+- Python Core requests `system.telemetry.read` through a typed capability request instead of accessing the OS directly.
+- Rust `HostCapabilityRegistry` executes host capabilities only after `SecurityGateway::authorize_at` permits them.
+- The first registered host capability is low-risk `system.telemetry.read`, implemented through `device_gateway.rs`.
+- Unknown, denied, or confirmation-required capabilities return explicit safe failures rather than falling through to unrestricted execution.
+- Capability decisions log only capability identifiers and safe outcomes; request inputs and secrets are not logged.
+- Host-to-Core and Core-to-host events carry the authenticated session identifier, bounded payloads, and monotonic event sequences on the active connection.
+- The HUD now exposes a real command panel and displays Core connection, processing, response, and error events from the host event bridge.
 
 ### Security boundary preserved
 
 ```text
 React / Three.js
-        ↓ Tauri IPC only
+        ↓ Tauri command / events only
 Rust / Tauri host
         ↓ authenticated local IPC
 Python Core
-        ↓ future capability requests only
+        ↓ typed Capability Request
 Security Gateway
-        ↓
+        ↓ authorized capability
 Rust Device Gateway
         ↓
 OS / device
 ```
 
-The live connection exposes no shell, filesystem, browser, process, MCP, microphone, model, or provider capability to Python.
+Python has no unrestricted shell, filesystem, browser, process, microphone, model, network, or device authority in this milestone.
+
+## Current deferred capabilities
+
+The following remain deliberately unimplemented because the required provider/runtime choices and host integrations are not yet verified in this environment:
+
+- real LLM inference/provider adapters and resource-aware model loading
+- native STT/VAD/TTS and wake-word/barge-in pipeline
+- network-backed research provider
+- broader filesystem/browser/software integrations
+- broader device adapters
+- MCP integrations behind capability policy
+- multi-device synchronization
+- controlled self-improvement workflows
+
+These are extension points, not permission to bypass the existing Security Gateway or IPC architecture.
 
 ## Tests and verification
 
 ### Executed in this environment
 
-The repository's Python Core test module was executed locally:
+The Python Core suite was executed locally:
 
 ```text
-python -m py_compile core/naveen_core/core_client.py core/naveen_core/test_core_client.py
-python -m unittest -v core.naveen_core.test_core_client
+python -m py_compile core/naveen_core/*.py
+python -m unittest discover -v core/naveen_core
 ```
 
-Result: **9 tests passed, 0 failed**.
+Results:
 
-The tests cover frame validation, canonical auth/session material, proof sequence binding, request material binding, successful authentication + health messaging, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
+- Python compilation: **PASS**
+- Python unit tests: **20 passed, 0 failed**
+
+The suite covers the live authenticated wire shape, frame validation, canonical message/proof material, event dispatch, intent routing, explicit memory behavior and namespaces, Core runtime events, capability-bound system status handling, and error handling for unsupported host events.
 
 ### Not executable in this environment
 
-The current execution environment does not provide `cargo`, `rustc`, or `rustfmt`. The repository also has no GitHub Actions workflow available to substitute for the missing Rust toolchain. Therefore these checks are **not claimed as passed** here:
+The current execution environment does not provide `cargo`, `rustc`, or `rustfmt`, and the repository has no GitHub Actions workflow available to substitute for the missing Rust toolchain. Therefore these commands are **not claimed as passed** here:
 
 ```text
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
@@ -88,18 +116,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
-### Required Windows verification
+### Required local Windows verification
 
-Run the four Cargo commands above from the local Windows development environment. Then run the Tauri desktop application and verify Core launch, authenticated bootstrap, stable `core.health` heartbeats, clean child termination, reconnect behavior, pipe-handle cleanup, and fail-closed handling of malformed/replayed/expired/unauthorized requests.
+Run the four Cargo commands above from the Windows development environment, then launch the Tauri application and verify Core bootstrap/authentication, text command round-trip, capability authorization, memory persistence, child cleanup, reconnect behavior, and fail-closed behavior for malformed or unauthorized messages.
 
-## Explicitly deferred
+## Next logical milestone
 
-- user authentication implementation
-- richer Python Core cognition/orchestration
-- Rust↔Python capability execution
-- STT/VAD/LLM/TTS
-- MCP
-- memory/research
-- browser/computer/filesystem tools
-- provider/runtime selection
-- cross-device adapters
+Complete the **real provider layer** behind the existing abstractions: resource-aware `ModelManager`, then native voice input/output and a host-mediated research provider. Each provider must be independently replaceable and continue to cross the same authenticated IPC + Security Gateway boundary.
