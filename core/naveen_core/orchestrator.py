@@ -4,6 +4,7 @@ from collections.abc import Callable
 import uuid
 
 from capabilities import SYSTEM_TELEMETRY_READ
+from context import ConversationContext
 from contracts import CoreResponse
 from intent import detect_intent
 from knowledge import KnowledgeStore
@@ -19,10 +20,12 @@ class Orchestrator:
         memory: SQLiteMemoryStore,
         models: ModelManager | None = None,
         knowledge: KnowledgeStore | None = None,
+        context: ConversationContext | None = None,
     ) -> None:
         self.memory = memory
         self.models = models or ModelManager()
         self.knowledge = knowledge or KnowledgeStore(self.memory.connection)
+        self.context = context or ConversationContext()
 
     def handle_text(
         self,
@@ -31,7 +34,27 @@ class Orchestrator:
         capability_requester: CapabilityRequester,
     ) -> CoreResponse:
         intent = detect_intent(text)
+        self.context.add("user", text)
 
+        try:
+            response = self._handle_intent(correlation_id, text, intent, capability_requester)
+        except (RuntimeError, ValueError, OSError):
+            response = CoreResponse(
+                correlation_id,
+                "I couldn’t complete that request safely. No privileged action was executed.",
+                {"ok": False, "error": "request_failed"},
+            )
+
+        self.context.add("assistant", response.message)
+        return response
+
+    def _handle_intent(
+        self,
+        correlation_id: str,
+        text: str,
+        intent,
+        capability_requester: CapabilityRequester,
+    ) -> CoreResponse:
         if intent.name == "empty":
             return CoreResponse(correlation_id, "Tell me what you want to do.")
 
@@ -50,7 +73,7 @@ class Orchestrator:
         if intent.name == "help":
             return CoreResponse(
                 correlation_id,
-                "I can handle text commands, explicit memory, approved workspace files, host status, and capability workflows.",
+                "I can handle text commands, explicit memory, approved workspace files, indexed knowledge, host status, and policy-gated capability workflows.",
                 {
                     "available": [
                         "memory.save",
@@ -59,6 +82,7 @@ class Orchestrator:
                         "system.status",
                         "file.read",
                         "knowledge.search",
+                        "conversation",
                     ]
                 },
             )
@@ -121,9 +145,7 @@ class Orchestrator:
                 f"Read and indexed {relative_path}.\n\n{preview}",
                 {
                     "path": relative_path,
-                    "size_bytes": result.get(
-                        "size_bytes", len(content.encode("utf-8"))
-                    ),
+                    "size_bytes": result.get("size_bytes", len(content.encode("utf-8"))),
                     "indexed": True,
                 },
             )
@@ -181,5 +203,22 @@ class Orchestrator:
 
         return CoreResponse(
             correlation_id,
-            self.models.complete(intent.argument, capability_requester),
+            self.models.complete(self._build_model_prompt(text), capability_requester),
+        )
+
+    def _build_model_prompt(self, user_text: str) -> str:
+        recent = self.context.render()
+        memories = self.memory.recall(user_text, limit=4)
+        memory_text = "\n".join(
+            f"- {item['content']} (namespace={item['namespace']})" for item in memories
+        )
+
+        return (
+            "You are NAVEEN AI, a personal assistant.\n"
+            "Be accurate, concise, and transparent about capabilities.\n"
+            "Do not claim to have used a tool, source, or device unless the host actually returned a result.\n"
+            "Use Tamil, English, or mixed Tamil-English naturally when the user does.\n\n"
+            f"Recent conversation:\n{recent or '(none)'}\n\n"
+            f"Relevant saved memory:\n{memory_text or '(none)'}\n\n"
+            f"Current user request:\n{user_text.strip()}"
         )
