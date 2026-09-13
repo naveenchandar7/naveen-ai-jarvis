@@ -22,6 +22,7 @@ import { useAssistantKeyboard } from "./hooks/useAssistantKeyboard";
 import { useAssistantState } from "./hooks/useAssistantState";
 import { useThemeName } from "./hooks/useTheme";
 import {
+  getCoreStatus,
   getSystemInfo,
   submitText,
   subscribeToCoreEvents,
@@ -72,6 +73,17 @@ function App() {
         }
       } catch (error) {
         console.error("NAVEEN HOST SYSTEM INFO ERROR:", error);
+      }
+    };
+
+    const loadCoreStatus = async () => {
+      try {
+        const status = await getCoreStatus();
+        if (mounted && status === "connected") {
+          setCoreStatus("AUTHENTICATED");
+        }
+      } catch (error) {
+        console.error("NAVEEN CORE STATUS ERROR:", error);
       }
     };
 
@@ -129,6 +141,7 @@ function App() {
     };
 
     loadSystemInfo();
+    loadCoreStatus();
 
     void subscribeToSystemTelemetry((info) => {
       if (mounted) {
