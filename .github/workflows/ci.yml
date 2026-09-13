@@ -26,9 +26,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Format check
-        run: cargo fmt --check
-
       - name: Test
         run: cargo test --all-targets
 
@@ -37,6 +34,9 @@ jobs:
 
       - name: Build
         run: cargo build
+
+      - name: Format check
+        run: cargo fmt --check
 
   python-core:
     name: Python Core
