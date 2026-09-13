@@ -22,11 +22,18 @@ pub enum RiskLevel {
     High,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilityRequest {
+/// Host-owned capability policy. The caller cannot choose its own permissions
+/// or risk level; those values come from this policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityPolicy {
     pub capability_id: String,
     pub permissions: Vec<Permission>,
     pub risk: RiskLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityRequest {
+    pub capability_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,9 +42,9 @@ pub struct AuthenticatedSession {
 }
 
 impl AuthenticatedSession {
-    /// Constructed only after an authentication mechanism has accepted a session.
-    /// The actual credential/token mechanism remains deliberately open.
-    pub fn new(session_id: impl Into<String>) -> Self {
+    /// Constructed by the host after a future authentication mechanism accepts
+    /// a session. The credential/token mechanism remains intentionally open.
+    pub(crate) fn new(session_id: impl Into<String>) -> Self {
         Self {
             session_id: session_id.into(),
         }
@@ -59,21 +66,21 @@ pub enum SecurityDecision {
 pub enum SecurityDenial {
     Unauthenticated,
     EmptyCapabilityId,
-    PermissionNotGranted(Permission),
+    CapabilityNotRegistered,
     HighRiskRequiresConfirmation,
 }
 
 /// Minimal deny-by-default Security Gateway foundation.
 ///
-/// This is deliberately policy-only: it does not execute OS operations,
-/// manage secrets, or choose an authentication/token implementation.
+/// Policy is host-owned. This layer does not execute OS operations, manage
+/// secrets, or choose an authentication/token implementation.
 pub struct SecurityGateway {
-    allowed_permissions: Vec<Permission>,
+    policies: Vec<CapabilityPolicy>,
 }
 
 impl SecurityGateway {
-    pub fn new(allowed_permissions: Vec<Permission>) -> Self {
-        Self { allowed_permissions }
+    pub fn new(policies: Vec<CapabilityPolicy>) -> Self {
+        Self { policies }
     }
 
     pub fn authorize(
@@ -90,17 +97,15 @@ impl SecurityGateway {
             return SecurityDecision::Deny(SecurityDenial::EmptyCapabilityId);
         }
 
-        if let Some(permission) = request
-            .permissions
+        let Some(policy) = self
+            .policies
             .iter()
-            .find(|permission| !self.allowed_permissions.contains(permission))
-        {
-            return SecurityDecision::Deny(SecurityDenial::PermissionNotGranted(
-                permission.clone(),
-            ));
-        }
+            .find(|policy| policy.capability_id == request.capability_id)
+        else {
+            return SecurityDecision::Deny(SecurityDenial::CapabilityNotRegistered);
+        };
 
-        if request.risk == RiskLevel::High && !confirmed {
+        if policy.risk == RiskLevel::High && !confirmed {
             return SecurityDecision::RequireConfirmation;
         }
 
@@ -116,70 +121,85 @@ mod tests {
         AuthenticatedSession::new("test-session")
     }
 
-    fn request(risk: RiskLevel) -> CapabilityRequest {
-        CapabilityRequest {
+    fn policy(risk: RiskLevel) -> CapabilityPolicy {
+        CapabilityPolicy {
             capability_id: "system.telemetry.read".to_string(),
             permissions: vec![Permission::SystemTelemetryRead],
             risk,
         }
     }
 
+    fn request() -> CapabilityRequest {
+        CapabilityRequest {
+            capability_id: "system.telemetry.read".to_string(),
+        }
+    }
+
     #[test]
     fn unauthenticated_requests_are_denied() {
-        let gateway = SecurityGateway::new(vec![Permission::SystemTelemetryRead]);
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
 
         assert_eq!(
-            gateway.authorize(None, &request(RiskLevel::Low), false),
+            gateway.authorize(None, &request(), false),
             SecurityDecision::Deny(SecurityDenial::Unauthenticated)
         );
     }
 
     #[test]
-    fn ungranted_permissions_are_denied() {
+    fn unregistered_capabilities_are_denied() {
         let gateway = SecurityGateway::new(vec![]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(RiskLevel::Low), false),
-            SecurityDecision::Deny(SecurityDenial::PermissionNotGranted(
-                Permission::SystemTelemetryRead
-            ))
+            gateway.authorize(Some(&session()), &request(), false),
+            SecurityDecision::Deny(SecurityDenial::CapabilityNotRegistered)
         );
     }
 
     #[test]
     fn high_risk_requires_explicit_confirmation() {
-        let gateway = SecurityGateway::new(vec![Permission::SystemTelemetryRead]);
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::High)]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(RiskLevel::High), false),
+            gateway.authorize(Some(&session()), &request(), false),
             SecurityDecision::RequireConfirmation
         );
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(RiskLevel::High), true),
+            gateway.authorize(Some(&session()), &request(), true),
             SecurityDecision::Allow
         );
     }
 
     #[test]
-    fn allowed_low_risk_request_is_permitted() {
-        let gateway = SecurityGateway::new(vec![Permission::SystemTelemetryRead]);
+    fn registered_low_risk_request_is_permitted() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(RiskLevel::Low), false),
+            gateway.authorize(Some(&session()), &request(), false),
             SecurityDecision::Allow
         );
     }
 
     #[test]
     fn empty_capability_ids_are_denied() {
-        let gateway = SecurityGateway::new(vec![Permission::SystemTelemetryRead]);
-        let mut request = request(RiskLevel::Low);
-        request.capability_id = "  ".to_string();
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let request = CapabilityRequest {
+            capability_id: "  ".to_string(),
+        };
 
         assert_eq!(
             gateway.authorize(Some(&session()), &request, false),
             SecurityDecision::Deny(SecurityDenial::EmptyCapabilityId)
+        );
+    }
+
+    #[test]
+    fn caller_cannot_raise_or_lower_host_policy_risk() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::High)]);
+
+        assert_eq!(
+            gateway.authorize(Some(&session()), &request(), false),
+            SecurityDecision::RequireConfirmation
         );
     }
 }
