@@ -7,9 +7,9 @@ from capabilities import SYSTEM_TELEMETRY_READ
 from context import ConversationContext
 from contracts import CoreResponse
 from intent import detect_intent
-from knowledge import KnowledgeStore
-from memory import SQLiteMemoryStore
-from model import ModelManager
+from knowledge import KnowledgeProvider
+from memory import MemoryStore
+from model import MODEL_TASK_CONVERSATION, MODEL_TASK_RESEARCH, ModelManager
 from research import HostNetworkResearchProvider, ResearchProvider
 
 CapabilityRequester = Callable[[str, dict], dict]
@@ -18,15 +18,17 @@ CapabilityRequester = Callable[[str, dict], dict]
 class Orchestrator:
     def __init__(
         self,
-        memory: SQLiteMemoryStore,
+        memory: MemoryStore,
         models: ModelManager | None = None,
-        knowledge: KnowledgeStore | None = None,
+        knowledge: KnowledgeProvider | None = None,
         context: ConversationContext | None = None,
         research: ResearchProvider | None = None,
     ) -> None:
+        if knowledge is None:
+            raise ValueError("knowledge provider must be supplied")
         self.memory = memory
         self.models = models or ModelManager()
-        self.knowledge = knowledge or KnowledgeStore(self.memory.connection)
+        self.knowledge = knowledge
         self.context = context or ConversationContext()
         self.research = research or HostNetworkResearchProvider()
 
@@ -223,7 +225,11 @@ class Orchestrator:
                 f"Topic:\n{result.topic}\n\n"
                 f"Sources:\n{source_text}"
             )
-            synthesis = self.models.complete(prompt, capability_requester)
+            synthesis = self.models.complete(
+                prompt,
+                capability_requester,
+                task=MODEL_TASK_RESEARCH,
+            )
             return CoreResponse(
                 correlation_id,
                 synthesis,
@@ -236,7 +242,11 @@ class Orchestrator:
 
         return CoreResponse(
             correlation_id,
-            self.models.complete(self._build_model_prompt(text, prior_context), capability_requester),
+            self.models.complete(
+                self._build_model_prompt(text, prior_context),
+                capability_requester,
+                task=MODEL_TASK_CONVERSATION,
+            ),
         )
 
     def _build_model_prompt(self, user_text: str, prior_context: str) -> str:
