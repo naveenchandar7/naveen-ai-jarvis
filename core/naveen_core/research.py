@@ -39,7 +39,7 @@ class HostNetworkResearchProvider:
     """Research adapter that can only fetch through the host capability gateway."""
 
     name = "host-network-research"
-    _URL_RE = re.compile(r"https?://[^\s<>"]+")
+    _URL_RE = re.compile(r'https?://[^\s<>"\']+')
 
     def __init__(self, endpoint_template: str | None = None) -> None:
         self.endpoint_template = endpoint_template or os.getenv("NAVEEN_RESEARCH_URL_TEMPLATE")
@@ -75,7 +75,6 @@ class HostNetworkResearchProvider:
         topic: str,
     ) -> ResearchResult:
         sources: list[ResearchSource] = []
-        errors: list[str] = []
         for url in urls:
             try:
                 result = capability_requester(
@@ -85,10 +84,8 @@ class HostNetworkResearchProvider:
                 content = result.get("content")
                 if isinstance(content, str) and content.strip():
                     sources.append(ResearchSource(url=url, content=content[:512 * 1024]))
-                else:
-                    errors.append(url)
             except (RuntimeError, ValueError, OSError):
-                errors.append(url)
+                continue
 
         if sources:
             return ResearchResult(topic, sources, True, None)
