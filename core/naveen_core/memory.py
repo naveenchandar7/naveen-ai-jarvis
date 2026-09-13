@@ -28,6 +28,10 @@ class SQLiteMemoryStore:
         )
         self._connection.commit()
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._connection
+
     def save(
         self,
         content: str,
