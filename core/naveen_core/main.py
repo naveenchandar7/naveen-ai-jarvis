@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sqlite3
 import sys
@@ -14,17 +15,23 @@ from runtime import CoreRuntime
 HEARTBEAT_INTERVAL_SECONDS = 2.0
 
 
+def _memory_db_path() -> str:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--memory-db")
+    args, _ = parser.parse_known_args()
+    db_path = args.memory_db or os.environ.get("NAVEEN_MEMORY_DB")
+    if not db_path:
+        raise RuntimeError("NAVEEN_MEMORY_DB is not configured")
+    return db_path
+
+
 def main() -> int:
     client = CoreClient(sys.stdin.buffer, sys.stdout.buffer)
     memory = None
     try:
         client.authenticate()
 
-        db_path = os.environ.get("NAVEEN_MEMORY_DB")
-        if not db_path:
-            raise RuntimeError("NAVEEN_MEMORY_DB is not configured")
-
-        memory = SQLiteMemoryStore(db_path)
+        memory = SQLiteMemoryStore(_memory_db_path())
         runtime = CoreRuntime(client, Orchestrator(memory, ModelManager()))
         runtime.start()
 
