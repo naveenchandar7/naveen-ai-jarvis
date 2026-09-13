@@ -1,8 +1,9 @@
+use crate::auth::AuthenticatedSession;
 use serde::{Deserialize, Serialize};
 
-/// Version of the host-side security contract.
+/// Version of the host-side authorization policy contract.
 ///
-/// This is intentionally independent of any future IPC wire protocol.
+/// This is intentionally independent of the future Rust↔Python wire protocol.
 pub const SECURITY_CONTRACT_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,36 +24,39 @@ pub enum RiskLevel {
 }
 
 /// Host-owned capability policy. The caller cannot choose its own permissions
-/// or risk level; those values come from this policy.
+/// or risk level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityPolicy {
-    pub capability_id: String,
-    pub permissions: Vec<Permission>,
-    pub risk: RiskLevel,
+    capability_id: String,
+    permissions: Vec<Permission>,
+    risk: RiskLevel,
+}
+
+impl CapabilityPolicy {
+    pub(crate) fn new(
+        capability_id: impl Into<String>,
+        permissions: Vec<Permission>,
+        risk: RiskLevel,
+    ) -> Self {
+        Self {
+            capability_id: capability_id.into(),
+            permissions,
+            risk,
+        }
+    }
+
+    pub fn permissions(&self) -> &[Permission] {
+        &self.permissions
+    }
+
+    pub fn risk(&self) -> RiskLevel {
+        self.risk
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityRequest {
     pub capability_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthenticatedSession {
-    session_id: String,
-}
-
-impl AuthenticatedSession {
-    /// Constructed by the host after a future authentication mechanism accepts
-    /// a session. The credential/token mechanism remains intentionally open.
-    pub(crate) fn new(session_id: impl Into<String>) -> Self {
-        Self {
-            session_id: session_id.into(),
-        }
-    }
-
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,15 +69,16 @@ pub enum SecurityDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecurityDenial {
     Unauthenticated,
+    SessionInactive,
     EmptyCapabilityId,
     CapabilityNotRegistered,
     HighRiskRequiresConfirmation,
 }
 
-/// Minimal deny-by-default Security Gateway foundation.
+/// Deny-by-default authorization policy owned by the Rust host.
 ///
-/// Policy is host-owned. This layer does not execute OS operations, manage
-/// secrets, or choose an authentication/token implementation.
+/// Authentication is deliberately separate: this gateway only accepts an
+/// `AuthenticatedSession` issued by the authentication boundary.
 pub struct SecurityGateway {
     policies: Vec<CapabilityPolicy>,
 }
@@ -83,14 +88,19 @@ impl SecurityGateway {
         Self { policies }
     }
 
-    pub fn authorize(
+    pub fn authorize_at(
         &self,
+        now_ms: u64,
         session: Option<&AuthenticatedSession>,
         request: &CapabilityRequest,
         confirmed: bool,
     ) -> SecurityDecision {
-        if session.is_none() {
+        let Some(session) = session else {
             return SecurityDecision::Deny(SecurityDenial::Unauthenticated);
+        };
+
+        if !session.is_active_at(now_ms) {
+            return SecurityDecision::Deny(SecurityDenial::SessionInactive);
         }
 
         if request.capability_id.trim().is_empty() {
@@ -116,17 +126,18 @@ impl SecurityGateway {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::test_session;
 
     fn session() -> AuthenticatedSession {
-        AuthenticatedSession::new("test-session")
+        test_session(10_000)
     }
 
     fn policy(risk: RiskLevel) -> CapabilityPolicy {
-        CapabilityPolicy {
-            capability_id: "system.telemetry.read".to_string(),
-            permissions: vec![Permission::SystemTelemetryRead],
+        CapabilityPolicy::new(
+            "system.telemetry.read",
+            vec![Permission::SystemTelemetryRead],
             risk,
-        }
+        )
     }
 
     fn request() -> CapabilityRequest {
@@ -140,8 +151,19 @@ mod tests {
         let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
 
         assert_eq!(
-            gateway.authorize(None, &request(), false),
+            gateway.authorize_at(1_000, None, &request(), false),
             SecurityDecision::Deny(SecurityDenial::Unauthenticated)
+        );
+    }
+
+    #[test]
+    fn inactive_sessions_are_denied() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let expired = test_session(1_000);
+
+        assert_eq!(
+            gateway.authorize_at(1_000, Some(&expired), &request(), false),
+            SecurityDecision::Deny(SecurityDenial::SessionInactive)
         );
     }
 
@@ -150,7 +172,7 @@ mod tests {
         let gateway = SecurityGateway::new(vec![]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(), false),
+            gateway.authorize_at(1_000, Some(&session()), &request(), false),
             SecurityDecision::Deny(SecurityDenial::CapabilityNotRegistered)
         );
     }
@@ -160,12 +182,12 @@ mod tests {
         let gateway = SecurityGateway::new(vec![policy(RiskLevel::High)]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(), false),
+            gateway.authorize_at(1_000, Some(&session()), &request(), false),
             SecurityDecision::RequireConfirmation
         );
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(), true),
+            gateway.authorize_at(1_000, Some(&session()), &request(), true),
             SecurityDecision::Allow
         );
     }
@@ -175,7 +197,7 @@ mod tests {
         let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(), false),
+            gateway.authorize_at(1_000, Some(&session()), &request(), false),
             SecurityDecision::Allow
         );
     }
@@ -188,7 +210,7 @@ mod tests {
         };
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request, false),
+            gateway.authorize_at(1_000, Some(&session()), &request, false),
             SecurityDecision::Deny(SecurityDenial::EmptyCapabilityId)
         );
     }
@@ -198,7 +220,7 @@ mod tests {
         let gateway = SecurityGateway::new(vec![policy(RiskLevel::High)]);
 
         assert_eq!(
-            gateway.authorize(Some(&session()), &request(), false),
+            gateway.authorize_at(1_000, Some(&session()), &request(), false),
             SecurityDecision::RequireConfirmation
         );
     }
