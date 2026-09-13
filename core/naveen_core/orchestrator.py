@@ -6,6 +6,7 @@ import uuid
 from capabilities import SYSTEM_TELEMETRY_READ
 from contracts import CoreResponse
 from intent import detect_intent
+from knowledge import KnowledgeStore
 from memory import SQLiteMemoryStore
 from model import ModelManager
 
@@ -17,9 +18,11 @@ class Orchestrator:
         self,
         memory: SQLiteMemoryStore,
         models: ModelManager | None = None,
+        knowledge: KnowledgeStore | None = None,
     ) -> None:
         self.memory = memory
         self.models = models or ModelManager()
+        self.knowledge = knowledge or KnowledgeStore(self.memory._connection)
 
     def handle_text(
         self,
@@ -47,13 +50,15 @@ class Orchestrator:
         if intent.name == "help":
             return CoreResponse(
                 correlation_id,
-                "I can handle text commands, explicit memory, host status, and capability workflows.",
+                "I can handle text commands, explicit memory, approved workspace files, host status, and capability workflows.",
                 {
                     "available": [
                         "memory.save",
                         "memory.recall",
                         "memory.forget",
                         "system.status",
+                        "file.read",
+                        "knowledge.search",
                     ]
                 },
             )
@@ -67,13 +72,13 @@ class Orchestrator:
             )
 
         if intent.name == "memory.recall":
-            rows = self.memory.recall("", limit=8)
+            rows = self.memory.recall(intent.argument, limit=8)
             if not rows:
-                return CoreResponse(correlation_id, "I don’t have any saved memories yet.")
+                return CoreResponse(correlation_id, "I don’t have a matching saved memory.")
             summary = "\n".join(f"- {row['content']}" for row in rows)
             return CoreResponse(
                 correlation_id,
-                f"Here’s what I currently remember:\n{summary}",
+                f"Here’s what I remember:\n{summary}",
                 {"memories": rows},
             )
 
@@ -89,6 +94,59 @@ class Orchestrator:
                 correlation_id,
                 "I couldn’t find a matching memory to forget.",
                 {"deleted": 0},
+            )
+
+        if intent.name == "file.read":
+            path = intent.argument
+            if not path:
+                return CoreResponse(correlation_id, "Tell me which file to read.")
+
+            request_id = f"cap-{uuid.uuid4().hex}"
+            result = capability_requester(
+                "filesystem.read_text",
+                {
+                    "request_id": request_id,
+                    "path": path,
+                    "max_bytes": 512 * 1024,
+                },
+            )
+            relative_path = str(result.get("path", path))
+            content = str(result.get("content", ""))
+            self.knowledge.upsert(relative_path, content)
+            preview = content[:4000]
+            if len(content) > len(preview):
+                preview += "\n... (preview truncated)"
+            return CoreResponse(
+                correlation_id,
+                f"Read and indexed {relative_path}.\n\n{preview}",
+                {
+                    "path": relative_path,
+                    "size_bytes": result.get(
+                        "size_bytes", len(content.encode("utf-8"))
+                    ),
+                    "indexed": True,
+                },
+            )
+
+        if intent.name == "knowledge.search":
+            query = intent.argument
+            rows = self.knowledge.search(query, limit=8)
+            if not rows:
+                return CoreResponse(
+                    correlation_id,
+                    "I couldn’t find that in the indexed documents.",
+                    {"results": []},
+                )
+
+            snippets = []
+            for row in rows:
+                content = str(row["content"])
+                snippets.append(f"{row['path']}: {content[:1200]}")
+            return CoreResponse(
+                correlation_id,
+                "Here are the most relevant indexed results:\n"
+                + "\n\n".join(snippets),
+                {"results": rows},
             )
 
         if intent.name == "system.status":
