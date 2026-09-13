@@ -10,6 +10,7 @@ from intent import detect_intent
 from knowledge import KnowledgeStore
 from memory import SQLiteMemoryStore
 from model import ModelManager
+from research import HostNetworkResearchProvider, ResearchProvider
 
 CapabilityRequester = Callable[[str, dict], dict]
 
@@ -21,11 +22,13 @@ class Orchestrator:
         models: ModelManager | None = None,
         knowledge: KnowledgeStore | None = None,
         context: ConversationContext | None = None,
+        research: ResearchProvider | None = None,
     ) -> None:
         self.memory = memory
         self.models = models or ModelManager()
         self.knowledge = knowledge or KnowledgeStore(self.memory.connection)
         self.context = context or ConversationContext()
+        self.research = research or HostNetworkResearchProvider()
 
     def handle_text(
         self,
@@ -34,10 +37,17 @@ class Orchestrator:
         capability_requester: CapabilityRequester,
     ) -> CoreResponse:
         intent = detect_intent(text)
+        prior_context = self.context.render()
         self.context.add("user", text)
 
         try:
-            response = self._handle_intent(correlation_id, text, intent, capability_requester)
+            response = self._handle_intent(
+                correlation_id,
+                text,
+                intent,
+                capability_requester,
+                prior_context,
+            )
         except (RuntimeError, ValueError, OSError):
             response = CoreResponse(
                 correlation_id,
@@ -54,6 +64,7 @@ class Orchestrator:
         text: str,
         intent,
         capability_requester: CapabilityRequester,
+        prior_context: str,
     ) -> CoreResponse:
         if intent.name == "empty":
             return CoreResponse(correlation_id, "Tell me what you want to do.")
@@ -73,7 +84,7 @@ class Orchestrator:
         if intent.name == "help":
             return CoreResponse(
                 correlation_id,
-                "I can handle text commands, explicit memory, approved workspace files, indexed knowledge, host status, and policy-gated capability workflows.",
+                "I can handle text commands, explicit memory, approved workspace files, indexed knowledge, host status, research retrieval, and policy-gated capability workflows.",
                 {
                     "available": [
                         "memory.save",
@@ -82,6 +93,7 @@ class Orchestrator:
                         "system.status",
                         "file.read",
                         "knowledge.search",
+                        "research",
                         "conversation",
                     ]
                 },
@@ -190,24 +202,44 @@ class Orchestrator:
             )
 
         if intent.name == "research":
-            topic = intent.argument or "the requested topic"
+            result = self.research.research(intent.argument, capability_requester)
+            if not result.available:
+                return CoreResponse(
+                    correlation_id,
+                    (
+                        f"I understood the research request for “{intent.argument}”, "
+                        f"but retrieval is unavailable: {result.error or 'not configured'}."
+                    ),
+                    {"topic": intent.argument, "available": False},
+                )
+
+            source_text = "\n\n".join(
+                f"SOURCE: {source.url}\n{source.content[:8000]}" for source in result.sources
+            )
+            prompt = (
+                "You are NAVEEN AI doing source-grounded research.\n"
+                "Use only the supplied source material. Clearly identify uncertainty and conflicts.\n"
+                "Do not claim facts that are not supported by the sources.\n\n"
+                f"Topic:\n{result.topic}\n\n"
+                f"Sources:\n{source_text}"
+            )
+            synthesis = self.models.complete(prompt, capability_requester)
             return CoreResponse(
                 correlation_id,
-                (
-                    f"I’ve understood the research request for “{topic}”. "
-                    "Current-source retrieval is not enabled in this build, "
-                    "so I won’t pretend that I fetched live sources."
-                ),
-                {"topic": topic, "available": False},
+                synthesis,
+                {
+                    "topic": result.topic,
+                    "sources": [source.url for source in result.sources],
+                    "source_count": len(result.sources),
+                },
             )
 
         return CoreResponse(
             correlation_id,
-            self.models.complete(self._build_model_prompt(text), capability_requester),
+            self.models.complete(self._build_model_prompt(text, prior_context), capability_requester),
         )
 
-    def _build_model_prompt(self, user_text: str) -> str:
-        recent = self.context.render()
+    def _build_model_prompt(self, user_text: str, prior_context: str) -> str:
         memories = self.memory.recall(user_text, limit=4)
         memory_text = "\n".join(
             f"- {item['content']} (namespace={item['namespace']})" for item in memories
@@ -218,7 +250,7 @@ class Orchestrator:
             "Be accurate, concise, and transparent about capabilities.\n"
             "Do not claim to have used a tool, source, or device unless the host actually returned a result.\n"
             "Use Tamil, English, or mixed Tamil-English naturally when the user does.\n\n"
-            f"Recent conversation:\n{recent or '(none)'}\n\n"
+            f"Recent conversation:\n{prior_context or '(none)'}\n\n"
             f"Relevant saved memory:\n{memory_text or '(none)'}\n\n"
             f"Current user request:\n{user_text.strip()}"
         )
