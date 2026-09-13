@@ -1,0 +1,48 @@
+name: Rust repair verification
+
+on:
+  push:
+    branches:
+      - verify/rust-auth-fix
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.77.2
+        shell: pwsh
+        run: rustup toolchain install 1.77.2-x86_64-pc-windows-msvc --profile minimal
+
+      - name: Format source
+        shell: pwsh
+        run: cargo +1.77.2-x86_64-pc-windows-msvc fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Upload formatted Rust sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: formatted-rust-sources
+          path: |
+            src-tauri/src/auth.rs
+            src-tauri/src/core_supervisor.rs
+
+      - name: Check formatting
+        shell: pwsh
+        run: cargo +1.77.2-x86_64-pc-windows-msvc fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: Test
+        shell: pwsh
+        run: cargo +1.77.2-x86_64-pc-windows-msvc test --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        shell: pwsh
+        run: cargo +1.77.2-x86_64-pc-windows-msvc clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        shell: pwsh
+        run: cargo +1.77.2-x86_64-pc-windows-msvc build --manifest-path src-tauri/Cargo.toml
