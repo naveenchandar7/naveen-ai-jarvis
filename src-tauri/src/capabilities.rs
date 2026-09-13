@@ -29,3 +29,23 @@ impl Default for HostCapabilityRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unknown_capability_is_denied() {
+        let registry = HostCapabilityRegistry::new();
+        assert!(registry.execute("unknown.capability", json!({})).is_err());
+    }
+
+    #[test]
+    fn telemetry_requires_object_input() {
+        let registry = HostCapabilityRegistry::new();
+        assert!(registry
+            .execute(SYSTEM_TELEMETRY_READ, Value::Null)
+            .is_err());
+    }
+}
