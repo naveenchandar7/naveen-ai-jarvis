@@ -1,4 +1,5 @@
 use crate::device_gateway::snapshot_system_info;
+use crate::network_gateway::{NetworkGateway, MODEL_COMPLETE, NETWORK_FETCH_TEXT};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
@@ -9,17 +10,23 @@ const DEFAULT_MAX_READ_BYTES: u64 = 512 * 1024;
 
 pub struct HostCapabilityRegistry {
     workspace_root: Option<PathBuf>,
+    network: NetworkGateway,
 }
 
 impl HostCapabilityRegistry {
-    pub fn new(workspace_root: Option<PathBuf>) -> Self {
-        Self { workspace_root }
+    pub fn new(workspace_root: Option<PathBuf>, network: NetworkGateway) -> Self {
+        Self {
+            workspace_root,
+            network,
+        }
     }
 
     pub fn execute(&self, capability_id: &str, input: Value) -> Result<Value, String> {
         match capability_id {
             SYSTEM_TELEMETRY_READ => self.read_system_telemetry(input),
             FILESYSTEM_READ_TEXT => self.read_workspace_text(input),
+            MODEL_COMPLETE => self.complete_model(input),
+            NETWORK_FETCH_TEXT => self.fetch_network_text(input),
             _ => Err("capability is not registered".to_string()),
         }
     }
@@ -87,11 +94,31 @@ impl HostCapabilityRegistry {
             "content": content,
         }))
     }
+
+    fn complete_model(&self, input: Value) -> Result<Value, String> {
+        let prompt = input
+            .as_object()
+            .and_then(|object| object.get("prompt"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing model prompt".to_string())?;
+        let text = self.network.model_complete(prompt)?;
+        Ok(json!({"content": text}))
+    }
+
+    fn fetch_network_text(&self, input: Value) -> Result<Value, String> {
+        let url = input
+            .as_object()
+            .and_then(|object| object.get("url"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "missing network URL".to_string())?;
+        let text = self.network.fetch_text(url)?;
+        Ok(json!({"url": url, "content": text}))
+    }
 }
 
 impl Default for HostCapabilityRegistry {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, NetworkGateway::default())
     }
 }
 
@@ -99,17 +126,16 @@ impl Default for HostCapabilityRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn unknown_capability_is_denied() {
-        let registry = HostCapabilityRegistry::new(None);
+        let registry = HostCapabilityRegistry::default();
         assert!(registry.execute("unknown.capability", json!({})).is_err());
     }
 
     #[test]
     fn telemetry_requires_object_input() {
-        let registry = HostCapabilityRegistry::new(None);
+        let registry = HostCapabilityRegistry::default();
         assert!(registry
             .execute(SYSTEM_TELEMETRY_READ, Value::Null)
             .is_err());
@@ -117,7 +143,7 @@ mod tests {
 
     #[test]
     fn file_reads_require_workspace_configuration() {
-        let registry = HostCapabilityRegistry::new(None);
+        let registry = HostCapabilityRegistry::default();
         assert!(registry
             .execute(FILESYSTEM_READ_TEXT, json!({"path": "note.txt"}))
             .is_err());
@@ -125,8 +151,8 @@ mod tests {
 
     #[test]
     fn file_reads_are_confined_to_workspace() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
         let root = std::env::temp_dir().join(format!("naveen-ai-{unique}"));
@@ -136,12 +162,11 @@ mod tests {
         fs::write(workspace.join("note.txt"), "hello from NAVEEN").expect("note");
         fs::write(&outside, "secret").expect("outside");
 
-        let registry = HostCapabilityRegistry::new(Some(workspace));
+        let registry = HostCapabilityRegistry::new(Some(workspace), NetworkGateway::default());
         let value = registry
             .execute(FILESYSTEM_READ_TEXT, json!({"path": "note.txt"}))
             .expect("read");
         assert_eq!(value["content"], "hello from NAVEEN");
-
         assert!(registry
             .execute(FILESYSTEM_READ_TEXT, json!({"path": "../outside.txt"}))
             .is_err());
