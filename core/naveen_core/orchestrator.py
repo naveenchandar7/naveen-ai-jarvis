@@ -22,7 +22,7 @@ class Orchestrator:
     ) -> None:
         self.memory = memory
         self.models = models or ModelManager()
-        self.knowledge = knowledge or KnowledgeStore(self.memory._connection)
+        self.knowledge = knowledge or KnowledgeStore(self.memory.connection)
 
     def handle_text(
         self,
