@@ -17,7 +17,7 @@ Established the versioned message contracts, framing, codec/transport interfaces
 
 ## Completed: Live Rust↔Python Core Connection
 
-The repository now contains the first real supervised Python Core skeleton and the Rust host-side lifecycle for it.
+The repository contains the first supervised Python Core skeleton and Rust host-side lifecycle for it.
 
 ### Implemented
 
@@ -32,7 +32,17 @@ The repository now contains the first real supervised Python Core skeleton and t
 - Only `core.health` + `heartbeat` is accepted in this milestone; all other methods are rejected.
 - Heartbeat timeout, child exit, authentication failure, protocol failure, and transport failure all close the connection, invalidate the session, terminate/wait for the child, and retry with capped exponential backoff.
 - Tauri application exit signals the supervisor to stop and joins the supervisor thread before process shutdown completes.
-- `tauri.conf.json` now bundles the `core/` directory as an application resource for release packaging.
+- `tauri.conf.json` bundles the `core/` directory as an application resource for release packaging.
+
+## Compile/format repair: Rust authentication boundary
+
+- `LaunchId` and `ChallengeId` tuple fields remain private.
+- Added crate-visible `from_bytes` constructors for safe typed reconstruction.
+- `core_supervisor.rs` uses those constructors instead of directly constructing private tuple fields.
+- Removed the unused `AuthError` import from `core_supervisor.rs`.
+- Restored `auth.rs` to readable Rust formatting without changing authentication behavior.
+- Affected authentication tests use `assert!(matches!(...))`, so the opaque `AuthenticatedSession` type does not need `Debug` or `PartialEq`.
+- No authentication, authorization, IPC protocol, Windows transport, or unrelated subsystem redesign was made.
 
 ### Security boundary preserved
 
@@ -56,39 +66,31 @@ The live connection exposes no shell, filesystem, browser, process, MCP, microph
 
 ### Executed in this environment
 
-Python-side contract tests were executed locally against the same protocol shapes used by the new Core skeleton:
+The repository's Python Core test module was executed locally:
 
 ```text
-python -m py_compile core_client.py test_core_client.py
-python -m unittest -v
+python -m py_compile core/naveen_core/core_client.py core/naveen_core/test_core_client.py
+python -m unittest -v core.naveen_core.test_core_client
 ```
 
-Result: **9 tests passed**.
+Result: **9 tests passed, 0 failed**.
 
-The executed tests cover frame validation, canonical auth/session material, proof sequence binding, request material binding, successful auth + health contract, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
+The tests cover frame validation, canonical auth/session material, proof sequence binding, request material binding, successful authentication + health messaging, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
 
-### Not executed here
+### Not executable in this environment
 
-The environment does not contain a Rust/Cargo toolchain or Windows runtime, so no `cargo test`, `cargo fmt`, `cargo clippy`, `cargo build`, or live Windows child-process smoke test is claimed.
-
-Required local Windows verification:
+The current execution environment does not provide `cargo`, `rustc`, or `rustfmt`. The repository also has no GitHub Actions workflow available to substitute for the missing Rust toolchain. Therefore these checks are **not claimed as passed** here:
 
 ```text
-cargo fmt --check
-cargo test
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --all-targets --all-features -- -D warnings
-cargo build
+cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
-Then run the Tauri desktop application and verify:
+### Required Windows verification
 
-1. Rust launches the bundled/configured Python Core.
-2. Bootstrap reaches only the child stdin pipe.
-3. Challenge/response establishes the existing session.
-4. `core.health` heartbeats remain stable.
-5. Killing the Core causes clean detection, session invalidation, child cleanup, and reconnect backoff.
-6. Closing the Tauri app terminates the child and releases pipe handles.
-7. A malformed, replayed, expired, or unauthorized request is rejected and the connection fails closed.
+Run the four Cargo commands above from the local Windows development environment. Then run the Tauri desktop application and verify Core launch, authenticated bootstrap, stable `core.health` heartbeats, clean child termination, reconnect behavior, pipe-handle cleanup, and fail-closed handling of malformed/replayed/expired/unauthorized requests.
 
 ## Explicitly deferred
 
@@ -101,7 +103,3 @@ Then run the Tauri desktop application and verify:
 - browser/computer/filesystem tools
 - provider/runtime selection
 - cross-device adapters
-
-## Next milestone boundary
-
-The next milestone may expand the live connection into the real Python Core orchestration layer and a capability request path, but only through the existing authenticated/versioned IPC and Security Gateway. No privileged capability may be added by bypassing Rust authorization, and no new authentication or token scheme may be introduced.

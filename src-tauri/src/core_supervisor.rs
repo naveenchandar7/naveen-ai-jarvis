@@ -1,5 +1,11 @@
-use crate::auth::{AuthChallenge, AuthError, AuthenticatedSession, AuthenticationProvider, AuthenticationServer, ChallengeResponse, AUTH_PROTOCOL_VERSION};
-use crate::ipc::{canonical_message_material, decode_frame, encode_frame, IpcEnvelope, IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus};
+use crate::auth::{
+    AuthChallenge, AuthenticatedSession, AuthenticationProvider, AuthenticationServer,
+    ChallengeResponse, AUTH_PROTOCOL_VERSION,
+};
+use crate::ipc::{
+    canonical_message_material, decode_frame, encode_frame, IpcEnvelope, IpcError,
+    IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -75,14 +81,20 @@ pub trait ManagedCoreProcess: Send {
 }
 
 pub trait CoreProcessLauncher: Send + Sync {
-    fn launch(&self, config: &CoreLaunchConfig) -> Result<Box<dyn ManagedCoreProcess>, CoreSupervisorError>;
+    fn launch(
+        &self,
+        config: &CoreLaunchConfig,
+    ) -> Result<Box<dyn ManagedCoreProcess>, CoreSupervisorError>;
 }
 
 #[derive(Clone, Copy, Default)]
 pub struct PlatformCoreProcessLauncher;
 
 impl CoreProcessLauncher for PlatformCoreProcessLauncher {
-    fn launch(&self, config: &CoreLaunchConfig) -> Result<Box<dyn ManagedCoreProcess>, CoreSupervisorError> {
+    fn launch(
+        &self,
+        config: &CoreLaunchConfig,
+    ) -> Result<Box<dyn ManagedCoreProcess>, CoreSupervisorError> {
         #[cfg(windows)]
         {
             Ok(Box::new(WindowsCoreProcess::launch(config)?))
@@ -119,6 +131,7 @@ impl CoreSupervisor {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = Arc::clone(&stop);
         let join = std::thread::spawn(move || supervisor_loop(config, launcher, stop_for_thread));
+
         Self {
             stop,
             join: Mutex::new(Some(join)),
@@ -159,6 +172,7 @@ fn supervisor_loop(
     };
 
     let mut backoff = CORE_RECONNECT_INITIAL;
+
     while !stop.load(Ordering::Acquire) {
         match run_connection(&config, launcher.as_ref(), &stop, &mut auth) {
             Ok(()) => backoff = CORE_RECONNECT_INITIAL,
@@ -199,6 +213,7 @@ fn establish_and_run(
     auth: &mut AuthenticationServer,
 ) -> Result<(), CoreSupervisorError> {
     let correlation_id = format!("core-auth-{}", now_ms());
+
     send_control(
         process.transport(),
         &CoreControlMessage::AuthBootstrap {
@@ -213,7 +228,10 @@ fn establish_and_run(
         .map_err(|_| CoreSupervisorError::Authentication)?;
     send_control(process.transport(), &challenge_to_wire(&challenge))?;
 
-    let response: ChallengeResponse = match recv_control(process.transport(), Duration::from_secs(5))? {
+    let response: ChallengeResponse = match recv_control(
+        process.transport(),
+        Duration::from_secs(5),
+    )? {
         CoreControlMessage::AuthResponse {
             ipc_protocol_version,
             auth_protocol_version,
@@ -228,10 +246,11 @@ fn establish_and_run(
             {
                 return Err(CoreSupervisorError::Handshake);
             }
+
             ChallengeResponse {
                 protocol_version: auth_protocol_version,
-                launch_id: crate::auth::LaunchId(array_16(&launch_id)?),
-                challenge_id: crate::auth::ChallengeId(array_16(&challenge_id)?),
+                launch_id: crate::auth::LaunchId::from_bytes(array_16(&launch_id)?),
+                challenge_id: crate::auth::ChallengeId::from_bytes(array_16(&challenge_id)?),
                 client_id,
                 correlation_id,
                 proof: array_32(&proof)?,
@@ -327,7 +346,11 @@ fn handle_core_request(
         if request.method == CORE_HEARTBEAT_METHOD && request.payload == CORE_HEARTBEAT_PAYLOAD {
             (ResponseStatus::Ok, None, b"alive".to_vec())
         } else {
-            (ResponseStatus::Rejected, Some("method_not_allowed".to_string()), Vec::new())
+            (
+                ResponseStatus::Rejected,
+                Some("method_not_allowed".to_string()),
+                Vec::new(),
+            )
         };
 
     let response = ResponseEnvelope {
@@ -410,6 +433,7 @@ fn send_control(
     if body.is_empty() || body.len() > crate::ipc::IPC_MAX_WIRE_BODY_SIZE {
         return Err(CoreSupervisorError::Protocol);
     }
+
     let length = u32::try_from(body.len()).map_err(|_| CoreSupervisorError::Protocol)?;
     let mut frame = Vec::with_capacity(4 + body.len());
     frame.extend_from_slice(&length.to_be_bytes());
@@ -429,6 +453,7 @@ fn recv_control<T: DeserializeOwned>(
     if frame.len() < 4 {
         return Err(CoreSupervisorError::Handshake);
     }
+
     let declared = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
     if declared == 0
         || declared > crate::ipc::IPC_MAX_WIRE_BODY_SIZE
@@ -436,15 +461,20 @@ fn recv_control<T: DeserializeOwned>(
     {
         return Err(CoreSupervisorError::Protocol);
     }
+
     serde_json::from_slice(&frame[4..]).map_err(|_| CoreSupervisorError::Handshake)
 }
 
 fn array_16(value: &[u8]) -> Result<[u8; 16], CoreSupervisorError> {
-    value.try_into().map_err(|_| CoreSupervisorError::Handshake)
+    value
+        .try_into()
+        .map_err(|_| CoreSupervisorError::Handshake)
 }
 
 fn array_32(value: &[u8]) -> Result<[u8; 32], CoreSupervisorError> {
-    value.try_into().map_err(|_| CoreSupervisorError::Handshake)
+    value
+        .try_into()
+        .map_err(|_| CoreSupervisorError::Handshake)
 }
 
 fn sleep_interruptible(stop: &AtomicBool, duration: Duration) {
@@ -456,15 +486,33 @@ fn sleep_interruptible(stop: &AtomicBool, duration: Duration) {
 
 fn log_core_failure(error: &CoreSupervisorError) {
     match error {
-        CoreSupervisorError::UnsupportedPlatform => log::warn!("NAVEEN Core unavailable: unsupported platform"),
-        CoreSupervisorError::ProcessLaunch => log::warn!("NAVEEN Core unavailable: process launch failure"),
-        CoreSupervisorError::Bootstrap => log::warn!("NAVEEN Core unavailable: bootstrap failure"),
-        CoreSupervisorError::Handshake => log::warn!("NAVEEN Core unavailable: handshake failure"),
-        CoreSupervisorError::Authentication => log::warn!("NAVEEN Core disconnected: authentication failure"),
-        CoreSupervisorError::Protocol => log::warn!("NAVEEN Core disconnected: protocol failure"),
-        CoreSupervisorError::Transport => log::warn!("NAVEEN Core disconnected: transport failure"),
-        CoreSupervisorError::HeartbeatTimeout => log::warn!("NAVEEN Core disconnected: heartbeat timeout"),
-        CoreSupervisorError::ChildExited => log::warn!("NAVEEN Core disconnected: child exited"),
+        CoreSupervisorError::UnsupportedPlatform => {
+            log::warn!("NAVEEN Core unavailable: unsupported platform")
+        }
+        CoreSupervisorError::ProcessLaunch => {
+            log::warn!("NAVEEN Core unavailable: process launch failure")
+        }
+        CoreSupervisorError::Bootstrap => {
+            log::warn!("NAVEEN Core unavailable: bootstrap failure")
+        }
+        CoreSupervisorError::Handshake => {
+            log::warn!("NAVEEN Core unavailable: handshake failure")
+        }
+        CoreSupervisorError::Authentication => {
+            log::warn!("NAVEEN Core disconnected: authentication failure")
+        }
+        CoreSupervisorError::Protocol => {
+            log::warn!("NAVEEN Core disconnected: protocol failure")
+        }
+        CoreSupervisorError::Transport => {
+            log::warn!("NAVEEN Core disconnected: transport failure")
+        }
+        CoreSupervisorError::HeartbeatTimeout => {
+            log::warn!("NAVEEN Core disconnected: heartbeat timeout")
+        }
+        CoreSupervisorError::ChildExited => {
+            log::warn!("NAVEEN Core disconnected: child exited")
+        }
     }
 }
 
