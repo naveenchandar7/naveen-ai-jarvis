@@ -1,0 +1,56 @@
+.naveen-command {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.naveen-command textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  resize: vertical;
+  box-sizing: border-box;
+  border: 1px solid rgba(130, 190, 255, 0.22);
+  border-radius: 0.75rem;
+  background: rgba(3, 12, 24, 0.55);
+  color: inherit;
+  padding: 0.85rem 0.9rem;
+  font: inherit;
+  line-height: 1.45;
+  outline: none;
+}
+
+.naveen-command textarea:focus {
+  border-color: rgba(130, 190, 255, 0.55);
+}
+
+.naveen-command textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.naveen-command-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: rgba(205, 226, 255, 0.55);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.naveen-command-footer button {
+  border: 1px solid rgba(130, 190, 255, 0.4);
+  border-radius: 999px;
+  background: rgba(35, 95, 150, 0.28);
+  color: inherit;
+  padding: 0.45rem 0.85rem;
+  font: inherit;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.naveen-command-footer button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
