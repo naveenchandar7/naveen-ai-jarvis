@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 import os
 from typing import Literal, Protocol
 
-from contracts import CoreResponse
-
-CapabilityRequester = callable
+CapabilityRequester = Callable[[str, dict], dict]
 ModelTask = Literal["conversation", "fast_response", "reasoning", "research_synthesis"]
 MODEL_TASK_CONVERSATION: ModelTask = "conversation"
 MODEL_TASK_FAST_RESPONSE: ModelTask = "fast_response"
@@ -14,9 +13,9 @@ MODEL_TASK_REASONING: ModelTask = "reasoning"
 MODEL_TASK_RESEARCH: ModelTask = "research_synthesis"
 
 
+@dataclass(frozen=True)
 class ModelRequest:
-    def __init__(self, prompt: str) -> None:
-        self.prompt = prompt
+    prompt: str
 
 
 class ModelProvider(Protocol):
@@ -25,7 +24,7 @@ class ModelProvider(Protocol):
     def complete(
         self,
         request: ModelRequest,
-        capability_requester=None,
+        capability_requester: CapabilityRequester | None = None,
     ) -> str:
         ...
 
@@ -33,7 +32,11 @@ class ModelProvider(Protocol):
 class TemplateModelProvider:
     name = "template-offline"
 
-    def complete(self, request: ModelRequest, capability_requester=None) -> str:
+    def complete(
+        self,
+        request: ModelRequest,
+        capability_requester: CapabilityRequester | None = None,
+    ) -> str:
         del capability_requester
         prompt = request.prompt.strip()
         if not prompt:
@@ -44,7 +47,11 @@ class TemplateModelProvider:
 class HostRoutedModelProvider:
     name = "host-routed-model"
 
-    def complete(self, request: ModelRequest, capability_requester=None) -> str:
+    def complete(
+        self,
+        request: ModelRequest,
+        capability_requester: CapabilityRequester | None = None,
+    ) -> str:
         if capability_requester is None:
             raise RuntimeError("host capability requester is unavailable")
         result = capability_requester("model.complete", {"prompt": request.prompt})
@@ -55,6 +62,8 @@ class HostRoutedModelProvider:
 
 
 class ModelManager:
+    """Task-aware model router; concrete providers remain replaceable."""
+
     def __init__(
         self,
         provider: ModelProvider | None = None,
@@ -78,12 +87,15 @@ class ModelManager:
         self._providers[task] = provider
 
     def provider_for(self, task: ModelTask) -> ModelProvider:
-        return self._providers.get(task, self._providers[MODEL_TASK_CONVERSATION])
+        return self._providers.get(
+            task,
+            self._providers[MODEL_TASK_CONVERSATION],
+        )
 
     def complete(
         self,
         prompt: str,
-        capability_requester=None,
+        capability_requester: CapabilityRequester | None = None,
         *,
         task: ModelTask = MODEL_TASK_CONVERSATION,
     ) -> str:
