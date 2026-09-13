@@ -6,20 +6,21 @@ use tauri::{Emitter, Manager, State};
 
 #[expect(
     dead_code,
+    reason = "Audio owns the native stream lifetime; some provider-facing pieces are intentionally dormant until voice providers are integrated."
+)]
+mod audio;
+#[expect(
+    dead_code,
     clippy::too_many_arguments,
     clippy::wrong_self_convention,
     reason = "Authentication exposes stable foundational APIs that are intentionally consumed incrementally as the host/runtime layers expand."
 )]
 mod auth;
-#[expect(
-    dead_code,
-    reason = "Audio owns the native stream lifetime; some provider-facing pieces are intentionally dormant until voice providers are integrated."
-)]
-mod audio;
 mod capabilities;
 #[expect(
     dead_code,
     clippy::enum_variant_names,
+    clippy::too_many_arguments,
     reason = "Core supervision keeps explicit authentication control-message names to preserve the existing wire contract."
 )]
 mod core_supervisor;
@@ -49,9 +50,7 @@ fn get_system_info() -> device_gateway::SystemInfo {
 }
 
 #[tauri::command]
-fn get_core_status(
-    supervisor: State<'_, core_supervisor::CoreSupervisor>,
-) -> &'static str {
+fn get_core_status(supervisor: State<'_, core_supervisor::CoreSupervisor>) -> &'static str {
     if supervisor.is_connected() {
         "connected"
     } else {
@@ -127,9 +126,7 @@ pub fn run() {
                         ));
                     }
                     Err(_) => {
-                        log::warn!(
-                            "NAVEEN Core unavailable: local Core resource not configured"
-                        );
+                        log::warn!("NAVEEN Core unavailable: local Core resource not configured");
                         app.manage(core_supervisor::CoreSupervisor::disabled());
                     }
                 }
@@ -162,10 +159,7 @@ pub fn run() {
                     .and_then(Result::ok)
                     .unwrap_or(0.0);
 
-                if audio_handle
-                    .emit(VOICE_TELEMETRY_EVENT, mic_level)
-                    .is_err()
-                {
+                if audio_handle.emit(VOICE_TELEMETRY_EVENT, mic_level).is_err() {
                     break;
                 }
 
@@ -187,9 +181,13 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            let _ = app_handle.state::<audio::AudioState>().stream.lock().map(|mut s| {
-                *s = None;
-            });
+            let _ = app_handle
+                .state::<audio::AudioState>()
+                .stream
+                .lock()
+                .map(|mut s| {
+                    *s = None;
+                });
             app_handle
                 .state::<core_supervisor::CoreSupervisor>()
                 .shutdown_and_join();

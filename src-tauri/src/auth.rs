@@ -216,10 +216,7 @@ impl AuthCrypto for PlatformCrypto {
                 output: *mut u8,
                 output_len: u32,
             ) -> i32;
-            fn BCryptCloseAlgorithmProvider(
-                algorithm: AlgHandle,
-                flags: u32,
-            ) -> i32;
+            fn BCryptCloseAlgorithmProvider(algorithm: AlgHandle, flags: u32) -> i32;
         }
 
         const BCRYPT_ALG_HANDLE_HMAC_FLAG: u32 = 0x0000_0008;
@@ -454,12 +451,7 @@ impl<C: AuthCrypto> AuthenticationServer<C> {
         self.audit_events.push_back(event);
     }
 
-    fn record_failure(
-        &mut self,
-        now_ms: u64,
-        response: &ChallengeResponse,
-        error: &AuthError,
-    ) {
+    fn record_failure(&mut self, now_ms: u64, response: &ChallengeResponse, error: &AuthError) {
         let correlation_id = if validate_text(
             &response.correlation_id,
             AUTH_MAX_CORRELATION_ID_LEN,
@@ -1051,7 +1043,10 @@ mod tests {
             .expect("session");
 
         assert!(session.is_active_at(1_001));
-        assert_ne!(session.session_id().as_bytes(), &[0_u8; AUTH_SESSION_ID_LEN]);
+        assert_ne!(
+            session.session_id().as_bytes(),
+            &[0_u8; AUTH_SESSION_ID_LEN]
+        );
         assert_eq!(server.take_audit_events().len(), 2);
     }
 
@@ -1268,9 +1263,7 @@ mod tests {
             .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-11", 1_000)
             .expect("challenge");
         let response = response_for(&first, &challenge);
-        let session = first
-            .complete_challenge(&response, 1_001)
-            .expect("session");
+        let session = first.complete_challenge(&response, 1_001).expect("session");
 
         let mut second = server();
 
