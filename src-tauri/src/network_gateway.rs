@@ -19,14 +19,8 @@ impl NetworkGateway {
         let allowlist = std::env::var("NAVEEN_NETWORK_ALLOWLIST")
             .ok()
             .into_iter()
-            .flat_map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|entry| !entry.is_empty())
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
+            .flat_map(|value| value.split(',').map(str::trim).map(str::to_string))
+            .filter_map(|entry| normalize_origin(&entry))
             .collect();
 
         Self {
@@ -58,7 +52,7 @@ impl NetworkGateway {
             .as_deref()
             .ok_or_else(|| "model name is not configured".to_string())?;
 
-        self.ensure_allowed(endpoint)?;
+        self.ensure_model_allowed(endpoint)?;
 
         let body = match self.model_style.as_str() {
             "ollama" => json!({
@@ -105,7 +99,7 @@ impl NetworkGateway {
     }
 
     pub fn fetch_text(&self, url: &str) -> Result<String, String> {
-        self.ensure_allowed(url)?;
+        self.ensure_fetch_allowed(url)?;
         let mut response = self
             .agent
             .get(url)
@@ -119,19 +113,87 @@ impl NetworkGateway {
             .map_err(|error| format!("network response read failed: {error}"))
     }
 
-    fn ensure_allowed(&self, url: &str) -> Result<(), String> {
-        let is_loopback = url.starts_with("http://127.0.0.1:")
-            || url.starts_with("http://localhost:")
-            || url.starts_with("http://[::1]:");
-        if is_loopback || self.allowlist.iter().any(|prefix| url.starts_with(prefix)) {
+    fn ensure_model_allowed(&self, url: &str) -> Result<(), String> {
+        let origin = normalize_origin(url).ok_or_else(|| "invalid model endpoint".to_string())?;
+        if is_loopback_origin(&origin)
+            || self
+                .allowlist
+                .iter()
+                .any(|allowed| origin == *allowed)
+        {
+            return Ok(());
+        }
+        Err("model endpoint is not allowlisted".to_string())
+    }
+
+    fn ensure_fetch_allowed(&self, url: &str) -> Result<(), String> {
+        let origin = normalize_origin(url).ok_or_else(|| "invalid network URL".to_string())?;
+        if self.allowlist.iter().any(|allowed| origin == *allowed) {
             return Ok(());
         }
         Err("network target is not allowlisted".to_string())
     }
 }
 
+fn normalize_origin(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.bytes().any(|byte| byte.is_ascii_whitespace() || byte == b'\\') {
+        return None;
+    }
+
+    let (scheme, rest) = trimmed.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+
+    Some(format!("{scheme}://{}", authority.to_ascii_lowercase()))
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    origin.starts_with("http://127.0.0.1")
+        || origin.starts_with("http://localhost")
+        || origin.starts_with("http://[::1]")
+        || origin.starts_with("https://127.0.0.1")
+        || origin.starts_with("https://localhost")
+        || origin.starts_with("https://[::1]")
+}
+
 impl Default for NetworkGateway {
     fn default() -> Self {
         Self::from_env()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_origin_rejects_userinfo_and_wrong_scheme() {
+        assert!(normalize_origin("https://user@example.com").is_none());
+        assert!(normalize_origin("ftp://example.com").is_none());
+    }
+
+    #[test]
+    fn normalize_origin_lowercases_scheme_and_authority() {
+        assert_eq!(
+            normalize_origin("HTTPS://Example.COM/path"),
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn loopback_matching_does_not_accept_attacker_hostname() {
+        assert!(is_loopback_origin("http://127.0.0.1:11434"));
+        assert!(!is_loopback_origin("http://127.0.0.1.evil.example"));
+        assert!(is_loopback_origin("http://localhost:3000"));
+        assert!(!is_loopback_origin("http://localhost.evil.example"));
     }
 }
