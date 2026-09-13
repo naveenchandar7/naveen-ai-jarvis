@@ -9,6 +9,7 @@ use crate::ipc::{
     canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope,
     IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
 };
+use crate::network_gateway::NetworkGateway;
 use crate::security::{
     CapabilityPolicy, CapabilityRequest, Permission, RiskLevel, SecurityDecision, SecurityGateway,
 };
@@ -290,8 +291,21 @@ fn supervisor_loop(
             vec![Permission::FilesystemRead],
             RiskLevel::Medium,
         ),
+        CapabilityPolicy::new(
+            MODEL_COMPLETE,
+            vec![Permission::NetworkAccess],
+            RiskLevel::Medium,
+        ),
+        CapabilityPolicy::new(
+            NETWORK_FETCH_TEXT,
+            vec![Permission::NetworkAccess],
+            RiskLevel::High,
+        ),
     ]);
-    let capabilities = HostCapabilityRegistry::new(config.workspace_root.clone());
+    let capabilities = HostCapabilityRegistry::new(
+        config.workspace_root.clone(),
+        NetworkGateway::from_env(),
+    );
     let mut backoff = CORE_RECONNECT_INITIAL;
 
     while !stop.load(Ordering::Acquire) {
