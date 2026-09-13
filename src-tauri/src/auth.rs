@@ -216,7 +216,10 @@ impl AuthCrypto for PlatformCrypto {
                 output: *mut u8,
                 output_len: u32,
             ) -> i32;
-            fn BCryptCloseAlgorithmProvider(algorithm: AlgHandle, flags: u32) -> i32;
+            fn BCryptCloseAlgorithmProvider(
+                algorithm: AlgHandle,
+                flags: u32,
+            ) -> i32;
         }
 
         const BCRYPT_ALG_HANDLE_HMAC_FLAG: u32 = 0x0000_0008;
@@ -440,58 +443,6 @@ impl<C: AuthCrypto> AuthenticationServer<C> {
         self.launch_secret.0
     }
 
-    /// Prove a host-originated IPC message with the authenticated session key.
-    /// This intentionally does not advance the inbound Core sequence counter;
-    /// request replay protection and host->Core ordering use separate paths.
-    pub(crate) fn prove_session_message(
-        &self,
-        session: &AuthenticatedSession,
-        protocol_version: u16,
-        correlation_id: &str,
-        sequence: u64,
-        message_digest: &[u8],
-        now_ms: u64,
-    ) -> Result<[u8; AUTH_PROOF_LEN], AuthError> {
-        if protocol_version != AUTH_PROTOCOL_VERSION {
-            return Err(AuthError::UnsupportedProtocolVersion {
-                expected: AUTH_PROTOCOL_VERSION,
-                received: protocol_version,
-            });
-        }
-        validate_text(
-            correlation_id,
-            AUTH_MAX_CORRELATION_ID_LEN,
-            "correlation_id",
-        )?;
-        if sequence == 0 {
-            return Err(AuthError::InvalidSequence);
-        }
-
-        let Some(registered) = self.sessions.get(&session.session_id) else {
-            return Err(AuthError::UnknownSession);
-        };
-        if !Arc::ptr_eq(&registered.state, &session.state) {
-            return Err(AuthError::UnknownSession);
-        }
-        if !registered.state.is_active_at(now_ms) {
-            return Err(if now_ms >= registered.state.expires_at_ms {
-                AuthError::SessionExpired
-            } else {
-                AuthError::SessionRevoked
-            });
-        }
-
-        let transcript = message_transcript(
-            protocol_version,
-            &session.session_id,
-            correlation_id,
-            sequence,
-            message_digest,
-        );
-        self.crypto
-            .hmac_sha256(registered.state.session_key.as_bytes(), &transcript)
-    }
-
     pub fn take_audit_events(&mut self) -> Vec<AuthAuditEvent> {
         self.audit_events.drain(..).collect()
     }
@@ -577,13 +528,14 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
         )?;
 
         if self.challenges.len() >= AUTH_MAX_PENDING_CHALLENGES {
-            self.challenges.retain(|_, state| {
-                !state.challenge.expires_at_ms.saturating_add(AUTH_CHALLENGE_TTL_MS) < now_ms
-            });
-        }
-
-        if self.challenges.len() >= AUTH_MAX_PENDING_CHALLENGES {
-            return Err(AuthError::CryptoFailure);
+            if let Some(oldest) = self
+                .challenges
+                .iter()
+                .min_by_key(|(_, state)| state.challenge.issued_at_ms)
+                .map(|(id, _)| *id)
+            {
+                self.challenges.remove(&oldest);
+            }
         }
 
         let challenge_id = self.new_unique_challenge_id()?;
@@ -591,7 +543,7 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
         self.crypto.fill_random(&mut nonce)?;
 
         let challenge = AuthChallenge {
-            protocol_version,
+            protocol_version: AUTH_PROTOCOL_VERSION,
             launch_id: self.launch_id,
             challenge_id,
             nonce,
@@ -612,7 +564,7 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
         self.record(AuthAuditEvent {
             event_type: AuthAuditEventType::ChallengeIssued,
             timestamp_ms: now_ms,
-            protocol_version,
+            protocol_version: AUTH_PROTOCOL_VERSION,
             correlation_id: Some(correlation_id.to_string()),
             session_id: None,
             reason: None,
@@ -634,56 +586,68 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
                 });
             }
 
-            validate_text(
-                &response.client_id,
-                AUTH_MAX_CLIENT_ID_LEN,
-                "client_id",
-            )?;
+            validate_text(&response.client_id, AUTH_MAX_CLIENT_ID_LEN, "client_id")?;
             validate_text(
                 &response.correlation_id,
                 AUTH_MAX_CORRELATION_ID_LEN,
                 "correlation_id",
             )?;
 
-            let state = self
+            let challenge = self
                 .challenges
                 .get(&response.challenge_id)
-                .ok_or(AuthError::UnknownChallenge)?;
+                .ok_or(AuthError::UnknownChallenge)?
+                .challenge
+                .clone();
 
-            if state.consumed {
-                return Err(AuthError::ChallengeReplayed);
-            }
-            if now_ms >= state.challenge.expires_at_ms {
-                return Err(AuthError::ChallengeExpired);
-            }
-            if response.launch_id != state.challenge.launch_id {
+            let consumed = self
+                .challenges
+                .get(&response.challenge_id)
+                .map(|state| state.consumed)
+                .unwrap_or(false);
+
+            if challenge.launch_id != response.launch_id {
                 return Err(AuthError::LaunchIdentityMismatch);
             }
-            if response.correlation_id != state.challenge.correlation_id {
+
+            if consumed {
+                return Err(AuthError::ChallengeReplayed);
+            }
+
+            if now_ms < challenge.issued_at_ms || now_ms >= challenge.expires_at_ms {
+                return Err(AuthError::ChallengeExpired);
+            }
+
+            if response.correlation_id != challenge.correlation_id {
                 return Err(AuthError::CorrelationMismatch);
             }
-            if response.client_id != state.challenge.expected_client_id {
+
+            if response.client_id != challenge.expected_client_id
+                || response.client_id != self.expected_client_id
+            {
                 return Err(AuthError::ClientIdentityMismatch);
             }
 
-            let transcript = challenge_transcript(&state.challenge);
+            let transcript = challenge_transcript(&challenge);
             let expected = self
                 .crypto
                 .hmac_sha256(self.launch_secret.as_bytes(), &transcript)?;
 
-            if !constant_time_slice_eq(&expected, &response.proof) {
+            if !constant_time_eq(&expected, &response.proof) {
                 return Err(AuthError::InvalidProof);
             }
 
-            let challenge = state.challenge.clone();
-            if let Some(entry) = self.challenges.get_mut(&response.challenge_id) {
-                entry.consumed = true;
-            }
-
             let session_id = self.new_unique_session_id()?;
+            let session_material = session_key_material(&transcript, &session_id);
             let session_key = self
                 .crypto
-                .hmac_sha256(self.launch_secret.as_bytes(), &session_key_material(&transcript, &session_id))?;
+                .hmac_sha256(self.launch_secret.as_bytes(), &session_material)?;
+
+            if let Some(challenge_state) = self.challenges.get_mut(&response.challenge_id) {
+                challenge_state.consumed = true;
+            } else {
+                return Err(AuthError::UnknownChallenge);
+            }
 
             let state = Arc::new(SessionState {
                 issued_at_ms: now_ms,
@@ -700,7 +664,7 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
                 event_type: AuthAuditEventType::AuthenticationSucceeded,
                 timestamp_ms: now_ms,
                 protocol_version: AUTH_PROTOCOL_VERSION,
-                correlation_id: Some(challenge.correlation_id.clone()),
+                correlation_id: Some(response.correlation_id.clone()),
                 session_id: Some(session_id),
                 reason: None,
             });
@@ -923,6 +887,14 @@ fn push_string(output: &mut Vec<u8>, value: &str) {
     push_bytes(output, value.as_bytes());
 }
 
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut difference = 0_u8;
+    for index in 0..32 {
+        difference |= left[index] ^ right[index];
+    }
+    difference == 0
+}
+
 fn constant_time_slice_eq(expected: &[u8; 32], actual: &[u8]) -> bool {
     if actual.len() != expected.len() {
         return false;
@@ -955,6 +927,48 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+fn proof_for_test<C: AuthCrypto>(
+    server: &AuthenticationServer<C>,
+    challenge: &AuthChallenge,
+    client_id: &str,
+) -> [u8; AUTH_PROOF_LEN] {
+    let transcript = challenge_transcript(&AuthChallenge {
+        expected_client_id: client_id.to_string(),
+        ..challenge.clone()
+    });
+    server
+        .crypto
+        .hmac_sha256(server.launch_secret.as_bytes(), &transcript)
+        .expect("test crypto")
+}
+
+#[cfg(test)]
+fn session_message_proof_for_test<C: AuthCrypto>(
+    server: &AuthenticationServer<C>,
+    session: &AuthenticatedSession,
+    protocol_version: u16,
+    correlation_id: &str,
+    sequence: u64,
+    message_digest: &[u8],
+) -> [u8; AUTH_PROOF_LEN] {
+    let material = message_transcript(
+        protocol_version,
+        &session.session_id,
+        correlation_id,
+        sequence,
+        message_digest,
+    );
+    let registered = server
+        .sessions
+        .get(&session.session_id)
+        .expect("test session");
+    server
+        .crypto
+        .hmac_sha256(registered.state.session_key.as_bytes(), &material)
+        .expect("test crypto")
+}
+
+#[cfg(test)]
 pub(crate) fn test_session(expires_at_ms: u64) -> AuthenticatedSession {
     let state = Arc::new(SessionState {
         issued_at_ms: 0,
@@ -966,5 +980,368 @@ pub(crate) fn test_session(expires_at_ms: u64) -> AuthenticatedSession {
     AuthenticatedSession {
         session_id: SessionId([0xA5; AUTH_SESSION_ID_LEN]),
         state,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU8;
+
+    #[derive(Default)]
+    struct DeterministicCrypto {
+        counter: AtomicU8,
+    }
+
+    impl AuthCrypto for DeterministicCrypto {
+        fn fill_random(&self, output: &mut [u8]) -> Result<(), AuthError> {
+            let start = self.counter.fetch_add(1, Ordering::Relaxed);
+            for (index, byte) in output.iter_mut().enumerate() {
+                *byte = start.wrapping_add(index as u8).wrapping_add(1);
+            }
+            Ok(())
+        }
+
+        fn hmac_sha256(&self, key: &[u8], message: &[u8]) -> Result<[u8; 32], AuthError> {
+            let mut state = 0x243F_6A88_85A3_08D3_u64;
+            for byte in key.iter().chain(message.iter()) {
+                state ^= u64::from(*byte);
+                state = state.rotate_left(7).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            }
+
+            let mut output = [0_u8; 32];
+            for (index, byte) in output.iter_mut().enumerate() {
+                state ^= u64::from(index as u8);
+                state = state.rotate_left(11).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+                *byte = (state >> ((index % 8) * 8)) as u8;
+            }
+            Ok(output)
+        }
+    }
+
+    fn server() -> AuthenticationServer<DeterministicCrypto> {
+        AuthenticationServer::with_crypto(DeterministicCrypto::default(), CORE_CLIENT_ID)
+            .expect("server")
+    }
+
+    fn response_for(
+        server: &AuthenticationServer<DeterministicCrypto>,
+        challenge: &AuthChallenge,
+    ) -> ChallengeResponse {
+        ChallengeResponse {
+            protocol_version: AUTH_PROTOCOL_VERSION,
+            launch_id: challenge.launch_id,
+            challenge_id: challenge.challenge_id,
+            client_id: challenge.expected_client_id.clone(),
+            correlation_id: challenge.correlation_id.clone(),
+            proof: proof_for_test(server, challenge, CORE_CLIENT_ID),
+        }
+    }
+
+    #[test]
+    fn valid_challenge_response_establishes_session() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-1", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+
+        let session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+
+        assert!(session.is_active_at(1_001));
+        assert_ne!(session.session_id().as_bytes(), &[0_u8; AUTH_SESSION_ID_LEN]);
+        assert_eq!(server.take_audit_events().len(), 2);
+    }
+
+    #[test]
+    fn wrong_client_identity_is_rejected() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-2", 1_000)
+            .expect("challenge");
+        let mut response = response_for(&server, &challenge);
+        response.client_id = "impostor".to_string();
+
+        assert!(matches!(
+            server.complete_challenge(&response, 1_001),
+            Err(AuthError::ClientIdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn invalid_proof_is_rejected() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-3", 1_000)
+            .expect("challenge");
+        let mut response = response_for(&server, &challenge);
+        response.proof[0] ^= 0xFF;
+
+        assert!(matches!(
+            server.complete_challenge(&response, 1_001),
+            Err(AuthError::InvalidProof)
+        ));
+    }
+
+    #[test]
+    fn expired_challenge_is_rejected() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-4", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+
+        assert!(matches!(
+            server.complete_challenge(&response, challenge.expires_at_ms),
+            Err(AuthError::ChallengeExpired)
+        ));
+    }
+
+    #[test]
+    fn consumed_challenge_cannot_be_replayed() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-5", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+        let _session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+
+        assert!(matches!(
+            server.complete_challenge(&response, 1_002),
+            Err(AuthError::ChallengeReplayed)
+        ));
+    }
+
+    #[test]
+    fn wrong_protocol_version_is_rejected() {
+        let mut server = server();
+        assert!(matches!(
+            server.issue_challenge(99, "corr-6", 1_000),
+            Err(AuthError::UnsupportedProtocolVersion {
+                expected: AUTH_PROTOCOL_VERSION,
+                received: 99,
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_correlation_id_is_rejected() {
+        let mut server = server();
+        assert!(matches!(
+            server.issue_challenge(AUTH_PROTOCOL_VERSION, "", 1_000),
+            Err(AuthError::MalformedInput("correlation_id"))
+        ));
+    }
+
+    #[test]
+    fn launch_identity_mismatch_is_rejected() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-7", 1_000)
+            .expect("challenge");
+        let mut response = response_for(&server, &challenge);
+        let mut launch_id = *response.launch_id.as_bytes();
+        launch_id[0] ^= 0x01;
+        response.launch_id = LaunchId::from_bytes(launch_id);
+
+        assert!(matches!(
+            server.complete_challenge(&response, 1_001),
+            Err(AuthError::LaunchIdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn session_message_requires_valid_proof_and_monotonic_sequence() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-8", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+        let session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+        let digest = b"payload-digest";
+        let proof = session_message_proof_for_test(
+            &server,
+            &session,
+            AUTH_PROTOCOL_VERSION,
+            "msg-1",
+            1,
+            digest,
+        );
+
+        server
+            .verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-1",
+                1,
+                digest,
+                &proof,
+                1_002,
+            )
+            .expect("message accepted");
+
+        assert!(matches!(
+            server.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-1-replay",
+                1,
+                digest,
+                &proof,
+                1_003,
+            ),
+            Err(AuthError::ReplayDetected)
+        ));
+    }
+
+    #[test]
+    fn expired_session_is_rejected_and_revoked() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-9", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+        let session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+        let digest = b"payload-digest";
+        let proof = session_message_proof_for_test(
+            &server,
+            &session,
+            AUTH_PROTOCOL_VERSION,
+            "msg-2",
+            1,
+            digest,
+        );
+
+        assert!(matches!(
+            server.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-2",
+                1,
+                digest,
+                &proof,
+                session.expires_at_ms(),
+            ),
+            Err(AuthError::SessionExpired)
+        ));
+        assert!(!session.is_active_at(session.expires_at_ms()));
+    }
+
+    #[test]
+    fn explicit_invalidation_blocks_later_use() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-10", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+        let session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+        assert!(server.invalidate_session(&session, 1_002));
+
+        assert!(matches!(
+            server.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-3",
+                1,
+                b"digest",
+                &[0_u8; AUTH_PROOF_LEN],
+                1_003,
+            ),
+            Err(AuthError::SessionRevoked)
+        ));
+    }
+
+    #[test]
+    fn old_session_is_not_valid_in_a_new_launch() {
+        let mut first = server();
+        let challenge = first
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-11", 1_000)
+            .expect("challenge");
+        let response = response_for(&first, &challenge);
+        let session = first
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+
+        let mut second = server();
+
+        assert!(matches!(
+            second.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-4",
+                1,
+                b"digest",
+                &[0_u8; AUTH_PROOF_LEN],
+                1_002,
+            ),
+            Err(AuthError::UnknownSession)
+        ));
+    }
+
+    #[test]
+    fn malformed_session_message_is_rejected() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-12", 1_000)
+            .expect("challenge");
+        let response = response_for(&server, &challenge);
+        let session = server
+            .complete_challenge(&response, 1_001)
+            .expect("session");
+
+        assert!(matches!(
+            server.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-5",
+                0,
+                b"digest",
+                &[0_u8; AUTH_PROOF_LEN],
+                1_002,
+            ),
+            Err(AuthError::InvalidSequence)
+        ));
+
+        assert!(matches!(
+            server.verify_session_message(
+                &session,
+                AUTH_PROTOCOL_VERSION,
+                "msg-6",
+                1,
+                b"digest",
+                &[0_u8; AUTH_PROOF_LEN - 1],
+                1_003,
+            ),
+            Err(AuthError::MalformedInput("proof"))
+        ));
+    }
+
+    #[test]
+    fn audit_events_contain_no_challenge_nonce_or_proof() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-13", 1_000)
+            .expect("challenge");
+        let mut response = response_for(&server, &challenge);
+        let nonce_text = hex_encode(&challenge.nonce);
+        let proof_text = hex_encode(&response.proof);
+        response.proof[0] ^= 1;
+        let _ = server.complete_challenge(&response, 1_001);
+
+        let rendered = format!("{:?}", server.take_audit_events());
+        assert!(!rendered.contains(&nonce_text));
+        assert!(!rendered.contains(&proof_text));
+        assert!(!rendered.contains("launch_secret"));
+        assert!(!rendered.contains("session_key"));
     }
 }
