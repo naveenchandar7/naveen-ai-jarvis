@@ -39,7 +39,7 @@ class HostNetworkResearchProvider:
     """Research adapter that can only fetch through the host capability gateway."""
 
     name = "host-network-research"
-    _URL_RE = re.compile(r'https?://[^\s<>"\']+')
+    _URL_RE = re.compile(r"https?://[^\s<>]+")
 
     def __init__(self, endpoint_template: str | None = None) -> None:
         self.endpoint_template = endpoint_template or os.getenv("NAVEEN_RESEARCH_URL_TEMPLATE")
@@ -53,7 +53,7 @@ class HostNetworkResearchProvider:
         if not clean_topic:
             return ResearchResult(clean_topic, [], False, "research topic is empty")
 
-        urls = self._URL_RE.findall(clean_topic)
+        urls = [url.rstrip(".,;:!?)]}") for url in self._URL_RE.findall(clean_topic)]
         if urls:
             return self._fetch_sources(urls[:8], capability_requester, clean_topic)
 
