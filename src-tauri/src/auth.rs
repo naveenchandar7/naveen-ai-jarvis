@@ -1,5 +1,8 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 pub const AUTH_PROTOCOL_VERSION: u16 = 1;
 pub const AUTH_LAUNCH_ID_LEN: usize = 16;
@@ -89,6 +92,8 @@ pub enum AuthFailureReason {
     UnknownSession,
     InvalidSequence,
     ReplayDetected,
+    CryptoUnavailable,
+    CryptoFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,15 +133,17 @@ impl AuthError {
             Self::UnknownSession => AuthFailureReason::UnknownSession,
             Self::InvalidSequence => AuthFailureReason::InvalidSequence,
             Self::ReplayDetected => AuthFailureReason::ReplayDetected,
-            Self::CryptoUnavailable | Self::CryptoFailure => AuthFailureReason::MalformedInput,
+            Self::CryptoUnavailable => AuthFailureReason::CryptoUnavailable,
+            Self::CryptoFailure => AuthFailureReason::CryptoFailure,
         }
     }
 }
 
 /// Cryptography abstraction for the authentication boundary.
 ///
-/// The production Windows implementation uses OS cryptography. Test suites can
-/// inject a deterministic implementation without weakening production policy.
+/// Production uses the Windows CNG provider. Tests inject deterministic
+/// cryptography so protocol/session rules can be exercised without weakening
+/// the production implementation.
 pub trait AuthCrypto {
     fn fill_random(&self, output: &mut [u8]) -> Result<(), AuthError>;
     fn hmac_sha256(&self, key: &[u8], message: &[u8]) -> Result<[u8; 32], AuthError>;
@@ -441,16 +448,26 @@ impl<C: AuthCrypto> AuthenticationServer<C> {
     fn record_failure(
         &mut self,
         now_ms: u64,
-        response: Option<&ChallengeResponse>,
+        response: &ChallengeResponse,
         error: &AuthError,
     ) {
+        let correlation_id = if validate_text(
+            &response.correlation_id,
+            AUTH_MAX_CORRELATION_ID_LEN,
+            "correlation_id",
+        )
+        .is_ok()
+        {
+            Some(response.correlation_id.clone())
+        } else {
+            None
+        };
+
         self.record(AuthAuditEvent {
             event_type: AuthAuditEventType::AuthenticationFailed,
             timestamp_ms: now_ms,
-            protocol_version: response
-                .map(|value| value.protocol_version)
-                .unwrap_or(AUTH_PROTOCOL_VERSION),
-            correlation_id: response.map(|value| value.correlation_id.clone()),
+            protocol_version: response.protocol_version,
+            correlation_id,
             session_id: None,
             reason: Some(error.audit_reason()),
         });
@@ -569,34 +586,40 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
 
             let challenge = self
                 .challenges
-                .get_mut(&response.challenge_id)
-                .ok_or(AuthError::UnknownChallenge)?;
+                .get(&response.challenge_id)
+                .ok_or(AuthError::UnknownChallenge)?
+                .challenge
+                .clone();
 
-            if challenge.challenge.launch_id != response.launch_id {
+            let consumed = self
+                .challenges
+                .get(&response.challenge_id)
+                .map(|state| state.consumed)
+                .unwrap_or(false);
+
+            if challenge.launch_id != response.launch_id {
                 return Err(AuthError::LaunchIdentityMismatch);
             }
 
-            if challenge.consumed {
+            if consumed {
                 return Err(AuthError::ChallengeReplayed);
             }
 
-            if now_ms < challenge.challenge.issued_at_ms
-                || now_ms >= challenge.challenge.expires_at_ms
-            {
+            if now_ms < challenge.issued_at_ms || now_ms >= challenge.expires_at_ms {
                 return Err(AuthError::ChallengeExpired);
             }
 
-            if response.correlation_id != challenge.challenge.correlation_id {
+            if response.correlation_id != challenge.correlation_id {
                 return Err(AuthError::CorrelationMismatch);
             }
 
-            if response.client_id != challenge.challenge.expected_client_id
+            if response.client_id != challenge.expected_client_id
                 || response.client_id != self.expected_client_id
             {
                 return Err(AuthError::ClientIdentityMismatch);
             }
 
-            let transcript = challenge_transcript(&challenge.challenge);
+            let transcript = challenge_transcript(&challenge);
             let expected = self
                 .crypto
                 .hmac_sha256(self.launch_secret.as_bytes(), &transcript)?;
@@ -605,13 +628,17 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
                 return Err(AuthError::InvalidProof);
             }
 
-            challenge.consumed = true;
-
             let session_id = self.new_unique_session_id()?;
             let session_material = session_key_material(&transcript, &session_id);
             let session_key = self
                 .crypto
                 .hmac_sha256(self.launch_secret.as_bytes(), &session_material)?;
+
+            if let Some(challenge_state) = self.challenges.get_mut(&response.challenge_id) {
+                challenge_state.consumed = true;
+            } else {
+                return Err(AuthError::UnknownChallenge);
+            }
 
             let state = Arc::new(SessionState {
                 issued_at_ms: now_ms,
@@ -637,7 +664,7 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
         })();
 
         if let Err(error) = &result {
-            self.record_failure(now_ms, Some(response), error);
+            self.record_failure(now_ms, response, error);
         }
 
         result
@@ -731,7 +758,17 @@ impl<C: AuthCrypto> AuthenticationProvider for AuthenticationServer<C> {
                 event_type,
                 timestamp_ms: now_ms,
                 protocol_version,
-                correlation_id: Some(correlation_id.to_string()),
+                correlation_id: if validate_text(
+                    correlation_id,
+                    AUTH_MAX_CORRELATION_ID_LEN,
+                    "correlation_id",
+                )
+                .is_ok()
+                {
+                    Some(correlation_id.to_string())
+                } else {
+                    None
+                },
                 session_id: Some(session.session_id),
                 reason: Some(error.audit_reason()),
             });
@@ -923,7 +960,7 @@ fn session_message_proof_for_test<C: AuthCrypto>(
 }
 
 #[cfg(test)]
-fn test_session(expires_at_ms: u64) -> AuthenticatedSession {
+pub(crate) fn test_session(expires_at_ms: u64) -> AuthenticatedSession {
     let state = Arc::new(SessionState {
         issued_at_ms: 0,
         expires_at_ms,
@@ -1090,10 +1127,27 @@ mod tests {
     }
 
     #[test]
-    fn session_message_requires_valid_proof_and_monotonic_sequence() {
+    fn launch_identity_mismatch_is_rejected() {
         let mut server = server();
         let challenge = server
             .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-7", 1_000)
+            .expect("challenge");
+        let mut response = response_for(&server, &challenge);
+        let mut launch_id = *response.launch_id.as_bytes();
+        launch_id[0] ^= 0x01;
+        response.launch_id = LaunchId(launch_id);
+
+        assert_eq!(
+            server.complete_challenge(&response, 1_001),
+            Err(AuthError::LaunchIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn session_message_requires_valid_proof_and_monotonic_sequence() {
+        let mut server = server();
+        let challenge = server
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-8", 1_000)
             .expect("challenge");
         let response = response_for(&server, &challenge);
         let session = server.complete_challenge(&response, 1_001).expect("session");
@@ -1137,7 +1191,7 @@ mod tests {
     fn expired_session_is_rejected_and_revoked() {
         let mut server = server();
         let challenge = server
-            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-8", 1_000)
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-9", 1_000)
             .expect("challenge");
         let response = response_for(&server, &challenge);
         let session = server.complete_challenge(&response, 1_001).expect("session");
@@ -1170,7 +1224,7 @@ mod tests {
     fn explicit_invalidation_blocks_later_use() {
         let mut server = server();
         let challenge = server
-            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-9", 1_000)
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-10", 1_000)
             .expect("challenge");
         let response = response_for(&server, &challenge);
         let session = server.complete_challenge(&response, 1_001).expect("session");
@@ -1194,13 +1248,12 @@ mod tests {
     fn old_session_is_not_valid_in_a_new_launch() {
         let mut first = server();
         let challenge = first
-            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-10", 1_000)
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-11", 1_000)
             .expect("challenge");
         let response = response_for(&first, &challenge);
         let session = first.complete_challenge(&response, 1_001).expect("session");
 
         let mut second = server();
-        let proof = [0_u8; AUTH_PROOF_LEN];
 
         assert_eq!(
             second.verify_session_message(
@@ -1209,7 +1262,7 @@ mod tests {
                 "msg-4",
                 1,
                 b"digest",
-                &proof,
+                &[0_u8; AUTH_PROOF_LEN],
                 1_002,
             ),
             Err(AuthError::UnknownSession)
@@ -1220,7 +1273,7 @@ mod tests {
     fn malformed_session_message_is_rejected() {
         let mut server = server();
         let challenge = server
-            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-11", 1_000)
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-12", 1_000)
             .expect("challenge");
         let response = response_for(&server, &challenge);
         let session = server.complete_challenge(&response, 1_001).expect("session");
@@ -1256,7 +1309,7 @@ mod tests {
     fn audit_events_contain_no_challenge_nonce_or_proof() {
         let mut server = server();
         let challenge = server
-            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-12", 1_000)
+            .issue_challenge(AUTH_PROTOCOL_VERSION, "corr-13", 1_000)
             .expect("challenge");
         let mut response = response_for(&server, &challenge);
         let nonce_text = hex_encode(&challenge.nonce);
