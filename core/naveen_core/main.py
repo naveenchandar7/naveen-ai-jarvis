@@ -7,6 +7,7 @@ import sys
 import time
 
 from core_client import CoreClient
+from knowledge import SQLiteKnowledgeStore
 from memory import SQLiteMemoryStore
 from model import ModelManager
 from orchestrator import Orchestrator
@@ -32,7 +33,15 @@ def main() -> int:
         client.authenticate()
 
         memory = SQLiteMemoryStore(_memory_db_path())
-        runtime = CoreRuntime(client, Orchestrator(memory, ModelManager()))
+        knowledge = SQLiteKnowledgeStore(memory.connection)
+        runtime = CoreRuntime(
+            client,
+            Orchestrator(
+                memory,
+                ModelManager(),
+                knowledge=knowledge,
+            ),
+        )
         runtime.start()
 
         while True:
