@@ -6,6 +6,7 @@ use std::time::Duration;
 use tauri::Emitter;
 
 mod auth;
+mod ipc;
 mod security;
 
 const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
