@@ -4,12 +4,11 @@ use crate::auth::{
 };
 use crate::capabilities::{HostCapabilityRegistry, SYSTEM_TELEMETRY_READ};
 use crate::ipc::{
-    canonical_message_material, decode_frame, encode_frame, IpcEnvelope, IpcError, IpcTransport,
-    RequestEnvelope, ResponseEnvelope, ResponseStatus,
+    canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope,
+    IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
 };
 use crate::security::{
-    CapabilityPolicy, CapabilityRequest, RiskLevel, SecurityDecision, SecurityGateway,
-    Permission,
+    CapabilityPolicy, CapabilityRequest, Permission, RiskLevel, SecurityDecision, SecurityGateway,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -165,6 +164,14 @@ impl CoreSupervisor {
     }
 
     pub fn start(config: CoreLaunchConfig, app_handle: AppHandle) -> Self {
+        Self::start_with_launcher(config, Arc::new(PlatformCoreProcessLauncher), app_handle)
+    }
+
+    pub fn start_with_launcher(
+        config: CoreLaunchConfig,
+        launcher: Arc<dyn CoreProcessLauncher>,
+        app_handle: AppHandle,
+    ) -> Self {
         let (command_tx, command_rx) = mpsc::sync_channel(CORE_COMMAND_QUEUE_SIZE);
         let stop = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicBool::new(false));
@@ -173,7 +180,7 @@ impl CoreSupervisor {
         let join = std::thread::spawn(move || {
             supervisor_loop(
                 config,
-                Arc::new(PlatformCoreProcessLauncher),
+                launcher,
                 stop_for_thread,
                 command_rx,
                 app_handle,
@@ -456,9 +463,10 @@ fn heartbeat_loop(
 ) -> Result<(), CoreSupervisorError> {
     let mut last_core_event_sequence = 0_u64;
     let mut outbound_sequence = 0_u64;
+    let mut command_in_flight = false;
 
     while !stop.load(Ordering::Acquire) {
-        loop {
+        if !command_in_flight {
             match command_rx.try_recv() {
                 Ok(command) => {
                     outbound_sequence = outbound_sequence.saturating_add(1);
@@ -473,9 +481,9 @@ fn heartbeat_loop(
                             "text": command.text,
                         }),
                     )?;
+                    command_in_flight = true;
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => {}
             }
         }
 
@@ -502,6 +510,11 @@ fn heartbeat_loop(
                             return Err(CoreSupervisorError::Authentication);
                         }
                         last_core_event_sequence = event.sequence;
+
+                        let completed = matches!(
+                            event.event_type.as_str(),
+                            "core.response" | "core.error"
+                        );
                         handle_core_event(
                             process.transport(),
                             session,
@@ -511,6 +524,9 @@ fn heartbeat_loop(
                             security,
                             capabilities,
                         )?;
+                        if completed {
+                            command_in_flight = false;
+                        }
                     }
                     IpcEnvelope::Response(_) => return Err(CoreSupervisorError::Protocol),
                 }
@@ -526,7 +542,7 @@ fn heartbeat_loop(
 fn handle_core_event(
     transport: &mut dyn IpcTransport,
     session: &AuthenticatedSession,
-    event: &crate::ipc::EventEnvelope,
+    event: &EventEnvelope,
     outbound_sequence: &mut u64,
     app_handle: &AppHandle,
     security: &SecurityGateway,
@@ -560,12 +576,7 @@ fn handle_core_event(
             }
 
             *outbound_sequence = outbound_sequence.saturating_add(1);
-            let result = execute_capability(
-                security,
-                capabilities,
-                session,
-                &request,
-            );
+            let result = execute_capability(security, capabilities, session, &request);
 
             send_host_event(
                 transport,
@@ -648,7 +659,7 @@ fn send_host_event(
     payload: Value,
 ) -> Result<(), CoreSupervisorError> {
     let payload = serde_json::to_vec(&payload).map_err(|_| CoreSupervisorError::Protocol)?;
-    let envelope = IpcEnvelope::Event(crate::ipc::EventEnvelope {
+    let envelope = IpcEnvelope::Event(EventEnvelope {
         protocol_version: crate::ipc::IPC_PROTOCOL_VERSION,
         event_id: event_id.to_string(),
         session_id: *session.session_id().as_bytes(),
