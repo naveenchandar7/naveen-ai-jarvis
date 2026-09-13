@@ -10,6 +10,7 @@ mod capabilities;
 mod core_supervisor;
 mod device_gateway;
 mod ipc;
+mod network_gateway;
 mod security;
 
 const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
@@ -114,14 +115,14 @@ pub fn run() {
                     break;
                 }
 
-                let level = audio_handle
+                let mic_level = audio_handle
                     .try_state::<audio::AudioState>()
-                    .and_then(|state| state.stream.lock().ok())
-                    .and_then(|stream| stream.as_ref().map(audio::get_level));
-                let mic_level = match level {
-                    Some(Ok(value)) => value,
-                    _ => 0.0,
-                };
+                    .and_then(|state| {
+                        let stream = state.stream.lock().ok()?;
+                        stream.as_ref().map(audio::get_level)
+                    })
+                    .and_then(Result::ok)
+                    .unwrap_or(0.0);
 
                 if audio_handle
                     .emit(VOICE_TELEMETRY_EVENT, mic_level)
