@@ -35,9 +35,9 @@ export function VoicePanel({
 }: VoicePanelProps) {
   const targetLevelRef = useRef(0);
   const smoothedLevelRef = useRef(0);
-  const animationTimeRef = useRef(0);
   const frameRef = useRef<number | null>(null);
   const [displayLevel, setDisplayLevel] = useState(0);
+  const [animationTime, setAnimationTime] = useState(0);
 
   useEffect(() => {
     const gatedLevel =
@@ -50,8 +50,6 @@ export function VoicePanel({
 
   useEffect(() => {
     const animate = (time: number) => {
-      animationTimeRef.current = time;
-
       const target = targetLevelRef.current;
       const current = smoothedLevelRef.current;
       const smoothing = target > current ? 0.22 : 0.1;
@@ -59,6 +57,7 @@ export function VoicePanel({
 
       smoothedLevelRef.current = next;
       setDisplayLevel(next);
+      setAnimationTime(time);
       frameRef.current = window.requestAnimationFrame(animate);
     };
 
@@ -72,10 +71,8 @@ export function VoicePanel({
   }, []);
 
   const voiceActive = displayLevel > 0.02;
-
   const effectiveStatus =
     status === "standby" && voiceActive ? "listening" : status;
-
   const effectiveTranscript =
     status === "standby" && voiceActive ? "Audio detected..." : transcript;
 
@@ -84,9 +81,7 @@ export function VoicePanel({
     const normalized = center / ((BAR_COUNT - 1) / 2);
     const profile = 1 - normalized * 0.52;
     const phase = index * 0.42;
-    const motion =
-      0.78 +
-      Math.sin(animationTimeRef.current * 0.004 + phase) * 0.16;
+    const motion = 0.78 + Math.sin(animationTime * 0.004 + phase) * 0.16;
     const quietBase = 0.07;
     const value = quietBase + displayLevel * profile * motion;
 
