@@ -2,7 +2,9 @@ use crate::auth::{
     AuthChallenge, AuthenticatedSession, AuthenticationProvider, AuthenticationServer,
     ChallengeResponse, AUTH_PROTOCOL_VERSION,
 };
-use crate::capabilities::{HostCapabilityRegistry, SYSTEM_TELEMETRY_READ};
+use crate::capabilities::{
+    HostCapabilityRegistry, FILESYSTEM_READ_TEXT, SYSTEM_TELEMETRY_READ,
+};
 use crate::ipc::{
     canonical_message_material, decode_frame, encode_frame, EventEnvelope, IpcEnvelope,
     IpcError, IpcTransport, RequestEnvelope, ResponseEnvelope, ResponseStatus,
@@ -55,6 +57,7 @@ pub struct CoreLaunchConfig {
     pub python_executable: PathBuf,
     pub script_path: PathBuf,
     pub memory_db_path: PathBuf,
+    pub workspace_root: Option<PathBuf>,
     pub heartbeat_timeout: Duration,
 }
 
@@ -102,10 +105,15 @@ impl CoreLaunchConfig {
             .map_err(|_| CoreSupervisorError::ProcessLaunch)?
             .join("memory.sqlite3");
 
+        let workspace_root = std::env::var_os("NAVEEN_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir());
+
         Ok(Self {
             python_executable,
             script_path,
             memory_db_path,
+            workspace_root,
             heartbeat_timeout: CORE_HEARTBEAT_TIMEOUT,
         })
     }
@@ -271,12 +279,19 @@ fn supervisor_loop(
         }
     };
 
-    let security = SecurityGateway::new(vec![CapabilityPolicy::new(
-        SYSTEM_TELEMETRY_READ,
-        vec![Permission::SystemTelemetryRead],
-        RiskLevel::Low,
-    )]);
-    let capabilities = HostCapabilityRegistry::new();
+    let security = SecurityGateway::new(vec![
+        CapabilityPolicy::new(
+            SYSTEM_TELEMETRY_READ,
+            vec![Permission::SystemTelemetryRead],
+            RiskLevel::Low,
+        ),
+        CapabilityPolicy::new(
+            FILESYSTEM_READ_TEXT,
+            vec![Permission::FilesystemRead],
+            RiskLevel::Medium,
+        ),
+    ]);
+    let capabilities = HostCapabilityRegistry::new(config.workspace_root.clone());
     let mut backoff = CORE_RECONNECT_INITIAL;
 
     while !stop.load(Ordering::Acquire) {
@@ -918,6 +933,10 @@ impl WindowsCoreProcess {
             .env("NAVEEN_MEMORY_DB", &config.memory_db_path)
             .current_dir(working_dir)
             .creation_flags(CREATE_NO_WINDOW);
+
+        if let Some(workspace_root) = &config.workspace_root {
+            command.env("NAVEEN_WORKSPACE_ROOT", workspace_root);
+        }
 
         for variable in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
             if let Some(value) = std::env::var_os(variable) {
