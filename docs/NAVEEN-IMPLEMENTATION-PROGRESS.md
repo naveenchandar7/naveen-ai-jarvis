@@ -52,32 +52,54 @@ OS / device
 
 The live connection exposes no shell, filesystem, browser, process, MCP, microphone, model, or provider capability to Python.
 
+## Compile/format repair: Rust authentication boundary
+
+- `LaunchId` and `ChallengeId` remain private tuple structs.
+- Added crate-visible `from_bytes` constructors for safe typed reconstruction.
+- `core_supervisor.rs` uses the constructors rather than accessing tuple fields.
+- Removed the unused `AuthError` import from the supervisor.
+- Restored `auth.rs` to readable Rust formatting without changing the authentication behavior.
+- Authentication tests now use `assert!(matches!(...))` for expected error variants instead of requiring `Debug`/`PartialEq` on the opaque `AuthenticatedSession` type.
+- Temporary test/repair files were removed from the final repair tree.
+
 ## Tests and verification
 
 ### Executed in this environment
 
-Python-side contract tests were executed locally against the same protocol shapes used by the new Core skeleton:
+Python Core checks were executed locally:
 
 ```text
 python -m py_compile core_client.py test_core_client.py
 python -m unittest -v
 ```
 
-Result: **9 tests passed**.
+Results:
 
-The executed tests cover frame validation, canonical auth/session material, proof sequence binding, request material binding, successful auth + health contract, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
+- `py_compile`: **PASS**
+- Python unit tests: **18 passed, 0 failed**
 
-### Not executed here
+The 18 tests include the full Core client protocol/auth/health suite currently present in the repository and cover frame validation, canonical auth/session material, sequence-bound message proofs, request material binding, successful authentication + health messaging, invalid bootstrap protocol, malformed/expired challenge input, and response correlation mismatch.
 
-The environment does not contain a Rust/Cargo toolchain or Windows runtime, so no `cargo test`, `cargo fmt`, `cargo clippy`, `cargo build`, or live Windows child-process smoke test is claimed.
+### Not executable in this environment
 
-Required local Windows verification:
+The current execution environment does not contain `cargo`, `rustc`, or `rustfmt`, so these required commands could not actually be run here and are **not** claimed as passed:
 
 ```text
-cargo fmt --check
-cargo test
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --all-targets --all-features -- -D warnings
-cargo build
+cargo build --manifest-path src-tauri/Cargo.toml
+```
+
+No GitHub Actions Rust workflow is present to substitute for the missing local toolchain.
+
+Required Windows verification from the local development machine:
+
+```text
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
 Then run the Tauri desktop application and verify:
