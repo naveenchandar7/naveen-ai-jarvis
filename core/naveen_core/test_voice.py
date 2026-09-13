@@ -17,7 +17,8 @@ class EnergyVadTests(unittest.TestCase):
         vad.accept_level(0.2, 0)
         self.assertTrue(vad.accept_level(0.2, 100))
         self.assertTrue(vad.accept_level(0.0, 399))
-        self.assertFalse(vad.accept_level(0.0, 400))
+        self.assertTrue(vad.accept_level(0.0, 698))
+        self.assertFalse(vad.accept_level(0.0, 699))
 
     def test_noise_does_not_enter_speaking_state(self):
         vad = EnergyVad(threshold=0.1, start_ms=100, end_ms=300)
