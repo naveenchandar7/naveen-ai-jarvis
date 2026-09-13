@@ -1,49 +1,29 @@
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
-use serde::Serialize;
 use std::time::Duration;
-use sysinfo::System;
-use tauri::Emitter;
-use tauri::Manager;
+
+use tauri::{Emitter, Manager, State};
 
 mod auth;
+mod capabilities;
 mod core_supervisor;
+mod device_gateway;
 mod ipc;
 mod security;
 
 const SYSTEM_TELEMETRY_EVENT: &str = "host://telemetry/system";
 
-#[derive(Clone, Serialize)]
-struct SystemInfo {
-    cpu_usage: f32,
-    memory_used: u64,
-    memory_total: u64,
-    os_name: String,
-    os_version: String,
-    uptime: u64,
+#[tauri::command]
+fn get_system_info() -> device_gateway::SystemInfo {
+    device_gateway::snapshot_system_info()
 }
 
 #[tauri::command]
-fn get_system_info() -> SystemInfo {
-    let mut system = System::new_all();
-
-    system.refresh_cpu_usage();
-    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-    system.refresh_cpu_usage();
-    system.refresh_memory();
-
-    system_info_from(&system)
-}
-
-fn system_info_from(system: &System) -> SystemInfo {
-    SystemInfo {
-        cpu_usage: system.global_cpu_usage(),
-        memory_used: system.used_memory(),
-        memory_total: system.total_memory(),
-        os_name: System::name().unwrap_or_else(|| "Unknown".to_string()),
-        os_version: System::os_version().unwrap_or_else(|| "Unknown".to_string()),
-        uptime: System::uptime(),
-    }
+fn submit_text(
+    text: String,
+    supervisor: State<'_, core_supervisor::CoreSupervisor>,
+) -> Result<String, String> {
+    supervisor.submit_text(text)
 }
 
 pub fn run() {
@@ -61,10 +41,15 @@ pub fn run() {
             {
                 match core_supervisor::CoreLaunchConfig::from_app(app.handle()) {
                     Ok(config) => {
-                        app.manage(core_supervisor::CoreSupervisor::start(config));
+                        app.manage(core_supervisor::CoreSupervisor::start(
+                            config,
+                            app.handle().clone(),
+                        ));
                     }
                     Err(_) => {
-                        log::warn!("NAVEEN Core unavailable: local Core resource not configured");
+                        log::warn!(
+                            "NAVEEN Core unavailable: local Core resource not configured"
+                        );
                         app.manage(core_supervisor::CoreSupervisor::disabled());
                     }
                 }
@@ -77,29 +62,22 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
 
-            std::thread::spawn(move || {
-                let mut system = System::new_all();
+            std::thread::spawn(move || loop {
+                let system_info = device_gateway::snapshot_system_info();
 
-                loop {
-                    system.refresh_cpu_usage();
-                    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-                    system.refresh_cpu_usage();
-                    system.refresh_memory();
-
-                    if app_handle
-                        .emit(SYSTEM_TELEMETRY_EVENT, system_info_from(&system))
-                        .is_err()
-                    {
-                        break;
-                    }
-
-                    std::thread::sleep(Duration::from_secs(2));
+                if app_handle
+                    .emit(SYSTEM_TELEMETRY_EVENT, system_info)
+                    .is_err()
+                {
+                    break;
                 }
+
+                std::thread::sleep(Duration::from_secs(2));
             });
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_system_info])
+        .invoke_handler(tauri::generate_handler![get_system_info, submit_text])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
