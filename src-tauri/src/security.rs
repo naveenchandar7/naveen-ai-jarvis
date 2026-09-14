@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// This is intentionally independent of the future Rust↔Python wire protocol.
 pub const SECURITY_CONTRACT_VERSION: u16 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Permission {
     SystemTelemetryRead,
     AudioCapture,
@@ -154,9 +154,10 @@ impl SecurityGateway {
             Err(DeviceSecurityError::PermissionNotGranted) => {
                 SecurityDecision::Deny(SecurityDenial::DevicePermissionNotGranted)
             }
-            Err(DeviceSecurityError::InvalidDeviceId | DeviceSecurityError::DeviceAlreadyRegistered) => {
-                SecurityDecision::Deny(SecurityDenial::DeviceNotRegistered)
-            }
+            Err(
+                DeviceSecurityError::InvalidDeviceId
+                | DeviceSecurityError::DeviceAlreadyRegistered,
+            ) => SecurityDecision::Deny(SecurityDenial::DeviceNotRegistered),
         }
     }
 
@@ -363,7 +364,6 @@ mod tests {
 
     #[test]
     fn authenticated_device_without_required_permission_is_denied() {
-        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
         let mut devices = DeviceRegistry::new();
         devices
             .register(
