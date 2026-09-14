@@ -112,7 +112,7 @@ class ModelManager:
             default_provider = TemplateModelProvider()
 
         self.registry = ModelProviderRegistry()
-        self.registry.register(default_provider)
+        self.register_provider(default_provider)
 
         self._providers: dict[ModelTask, ModelProvider] = {
             MODEL_TASK_CONVERSATION: default_provider,
@@ -120,17 +120,35 @@ class ModelManager:
 
         if providers:
             for task, task_provider in providers.items():
-                if task_provider.name not in self.registry.names():
-                    self.registry.register(task_provider)
-                self._providers[task] = task_provider
+                self.register_provider(task_provider)
+                self.bind_task(task, task_provider.name)
 
         self.provider = default_provider
 
-    def register(self, task: ModelTask, provider: ModelProvider) -> None:
-        if provider.name not in self.registry.names():
-            self.registry.register(provider)
+    def register_provider(self, provider: ModelProvider) -> None:
+        """Add a provider to the named registry without assigning any task."""
+        name = provider.name.strip()
 
-        self._providers[task] = provider
+        if not name:
+            raise ValueError("model provider name must not be empty")
+
+        try:
+            existing = self.registry.get(name)
+        except KeyError:
+            self.registry.register(provider)
+            return
+
+        if existing is not provider:
+            raise ValueError(f"model provider already registered: {name}")
+
+    def bind_task(self, task: ModelTask, provider_name: str) -> None:
+        """Route a task to an already registered provider by stable name."""
+        self._providers[task] = self.registry.get(provider_name)
+
+    def register(self, task: ModelTask, provider: ModelProvider) -> None:
+        """Compatibility helper that registers and binds a provider to a task."""
+        self.register_provider(provider)
+        self.bind_task(task, provider.name)
 
     def provider_for(self, task: ModelTask) -> ModelProvider:
         return self._providers.get(

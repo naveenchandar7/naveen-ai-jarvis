@@ -106,6 +106,46 @@ class HostRoutedModelProviderTests(unittest.TestCase):
 
 
 class ModelRoutingTests(unittest.TestCase):
+    def test_register_provider_does_not_bind_a_task(self):
+        conversation = RecordingProvider("conversation-provider")
+        reasoning = RecordingProvider("reasoning-provider")
+        manager = ModelManager(provider=conversation)
+
+        manager.register_provider(reasoning)
+
+        self.assertEqual(
+            manager.provider_for(MODEL_TASK_REASONING).name,
+            "conversation-provider",
+        )
+        self.assertIs(
+            manager.registry.get("reasoning-provider"),
+            reasoning,
+        )
+
+    def test_bind_task_selects_registered_provider(self):
+        conversation = RecordingProvider("conversation-provider")
+        reasoning = RecordingProvider("reasoning-provider")
+        manager = ModelManager(provider=conversation)
+
+        manager.register_provider(reasoning)
+        manager.bind_task(
+            MODEL_TASK_REASONING,
+            "reasoning-provider",
+        )
+
+        self.assertIs(
+            manager.provider_for(MODEL_TASK_REASONING),
+            reasoning,
+        )
+
+    def test_register_provider_rejects_different_provider_with_same_name(self):
+        conversation = RecordingProvider("conversation-provider")
+        duplicate = RecordingProvider("conversation-provider")
+        manager = ModelManager(provider=conversation)
+
+        with self.assertRaises(ValueError):
+            manager.register_provider(duplicate)
+
     def test_task_specific_provider_is_selected(self):
         conversation = RecordingProvider("conversation-provider")
         fast = RecordingProvider("fast-provider")
