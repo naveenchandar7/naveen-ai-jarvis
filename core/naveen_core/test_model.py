@@ -3,13 +3,19 @@ from __future__ import annotations
 import unittest
 
 from model import (
+    DEFAULT_MODEL_PROVIDER,
+    MODEL_PROVIDER_HOST_ROUTED,
+    MODEL_PROVIDER_TEMPLATE_OFFLINE,
     MODEL_TASK_CONVERSATION,
     MODEL_TASK_FAST_RESPONSE,
     MODEL_TASK_REASONING,
     HostRoutedModelProvider,
+    ModelConfig,
     ModelManager,
     ModelProviderRegistry,
+    ModelProviderResolver,
     ModelRequest,
+    TemplateModelProvider,
 )
 
 
@@ -22,6 +28,39 @@ class RecordingProvider:
         del capability_requester
         self.calls.append(request.prompt)
         return self.name
+
+
+class ModelConfigTests(unittest.TestCase):
+    def test_environment_values_are_loaded_without_secrets(self):
+        config = ModelConfig.from_environment(
+            {
+                "NAVEEN_MODEL_PROVIDER": "custom-provider",
+                "NAVEEN_MODEL_ENDPOINT": "http://localhost:1234/v1",
+                "NAVEEN_MODEL_NAME": "local-model",
+                "NAVEEN_MODEL_API_STYLE": "custom-style",
+                "NAVEEN_MODEL_CREDENTIAL_REF": "credential://model/local",
+            }
+        )
+
+        self.assertEqual(config.provider, "custom-provider")
+        self.assertEqual(config.endpoint, "http://localhost:1234/v1")
+        self.assertEqual(config.model, "local-model")
+        self.assertEqual(config.api_style, "custom-style")
+        self.assertEqual(config.credential_ref, "credential://model/local")
+
+    def test_environment_defaults_to_registered_offline_provider(self):
+        config = ModelConfig.from_environment({})
+
+        self.assertEqual(config.provider, DEFAULT_MODEL_PROVIDER)
+        self.assertEqual(config.provider, MODEL_PROVIDER_TEMPLATE_OFFLINE)
+        self.assertEqual(config.api_style, "openai_compatible")
+
+    def test_provider_and_api_style_must_not_be_empty(self):
+        with self.assertRaises(ValueError):
+            ModelConfig(provider="   ")
+
+        with self.assertRaises(ValueError):
+            ModelConfig(provider="provider", api_style="   ")
 
 
 class ModelProviderRegistryTests(unittest.TestCase):
@@ -61,6 +100,63 @@ class ModelProviderRegistryTests(unittest.TestCase):
         self.assertEqual(
             registry.names(),
             ("a-provider", "z-provider"),
+        )
+
+
+class ModelProviderResolverTests(unittest.TestCase):
+    def test_resolver_constructs_provider_from_registered_factory(self):
+        calls: list[ModelConfig] = []
+        provider = RecordingProvider("custom-provider")
+        resolver = ModelProviderResolver()
+
+        def factory(config: ModelConfig):
+            calls.append(config)
+            return provider
+
+        resolver.register("custom-provider", factory)
+        config = ModelConfig(provider="custom-provider", model="model-a")
+
+        resolved = resolver.resolve(config)
+
+        self.assertIs(resolved, provider)
+        self.assertEqual(calls, [config])
+        self.assertEqual(resolver.names(), ("custom-provider",))
+
+    def test_resolver_rejects_duplicate_factory(self):
+        resolver = ModelProviderResolver()
+        resolver.register("custom-provider", lambda config: RecordingProvider("one"))
+
+        with self.assertRaises(ValueError):
+            resolver.register("custom-provider", lambda config: RecordingProvider("two"))
+
+    def test_resolver_rejects_empty_factory_name(self):
+        resolver = ModelProviderResolver()
+
+        with self.assertRaises(ValueError):
+            resolver.register("   ", lambda config: RecordingProvider("provider"))
+
+    def test_resolver_rejects_unregistered_provider(self):
+        resolver = ModelProviderResolver()
+
+        with self.assertRaises(KeyError):
+            resolver.resolve(ModelConfig(provider="missing-provider"))
+
+    def test_default_resolver_registers_builtin_providers(self):
+        from model import create_default_model_provider_resolver
+
+        resolver = create_default_model_provider_resolver()
+
+        self.assertEqual(
+            resolver.names(),
+            (MODEL_PROVIDER_HOST_ROUTED, MODEL_PROVIDER_TEMPLATE_OFFLINE),
+        )
+        self.assertIsInstance(
+            resolver.resolve(ModelConfig(provider=MODEL_PROVIDER_TEMPLATE_OFFLINE)),
+            TemplateModelProvider,
+        )
+        self.assertIsInstance(
+            resolver.resolve(ModelConfig(provider=MODEL_PROVIDER_HOST_ROUTED)),
+            HostRoutedModelProvider,
         )
 
 
@@ -166,6 +262,31 @@ class ModelRoutingTests(unittest.TestCase):
         )
         self.assertEqual(conversation.calls, ["hello"])
         self.assertEqual(fast.calls, ["status"])
+
+    def test_manager_uses_resolver_for_runtime_provider(self):
+        provider = RecordingProvider("custom-provider")
+        resolver = ModelProviderResolver()
+        resolver.register(
+            "custom-provider",
+            lambda config: provider,
+        )
+
+        manager = ModelManager(
+            config=ModelConfig(provider="custom-provider"),
+            resolver=resolver,
+        )
+
+        self.assertIs(manager.provider, provider)
+        self.assertIs(manager.provider_for(MODEL_TASK_CONVERSATION), provider)
+
+    def test_manager_does_not_silently_fallback_for_unknown_provider(self):
+        resolver = ModelProviderResolver()
+
+        with self.assertRaises(KeyError):
+            ModelManager(
+                config=ModelConfig(provider="unknown-provider"),
+                resolver=resolver,
+            )
 
     def test_unregistered_task_falls_back_to_conversation_provider(self):
         conversation = RecordingProvider("conversation-provider")
