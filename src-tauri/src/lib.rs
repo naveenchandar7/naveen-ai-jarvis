@@ -28,6 +28,11 @@ mod device_gateway;
 mod device_security;
 #[expect(
     dead_code,
+    reason = "Device Fabric is the provider-independent node boundary; runtime registration and routing are integrated incrementally behind its stable contract."
+)]
+mod device_fabric;
+#[expect(
+    dead_code,
     reason = "IPC retains replaceable transport/audit abstractions whose public surface is exercised incrementally by the live runtime."
 )]
 mod ipc;
