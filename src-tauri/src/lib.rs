@@ -25,6 +25,7 @@ mod capabilities;
 )]
 mod core_supervisor;
 mod device_gateway;
+mod device_security;
 #[expect(
     dead_code,
     reason = "IPC retains replaceable transport/audit abstractions whose public surface is exercised incrementally by the live runtime."
@@ -91,106 +92,38 @@ fn stop_voice(audio_state: State<'_, audio::AudioState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn get_voice_level(audio_state: State<'_, audio::AudioState>) -> Result<f32, String> {
-    let stream = audio_state
-        .stream
-        .lock()
-        .map_err(|_| "Microphone state lock failed".to_string())?;
-    match stream.as_ref() {
-        Some(input) => audio::get_level(input),
-        None => Ok(0.0),
-    }
-}
-
 pub fn run() {
-    let app = tauri::Builder::default()
-        .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
-
-            app.manage(audio::AudioState::default());
-
-            #[cfg(windows)]
-            {
-                match core_supervisor::CoreLaunchConfig::from_app(app.handle()) {
-                    Ok(config) => {
-                        app.manage(core_supervisor::CoreSupervisor::start(
-                            config,
-                            app.handle().clone(),
-                        ));
-                    }
-                    Err(_) => {
-                        log::warn!("NAVEEN Core unavailable: local Core resource not configured");
-                        app.manage(core_supervisor::CoreSupervisor::disabled());
-                    }
-                }
-            }
-
-            #[cfg(not(windows))]
-            {
-                app.manage(core_supervisor::CoreSupervisor::disabled());
-            }
-
-            let telemetry_handle = app.handle().clone();
-            let audio_handle = app.handle().clone();
-
-            std::thread::spawn(move || loop {
-                let system_info = device_gateway::snapshot_system_info();
-
-                if telemetry_handle
-                    .emit(SYSTEM_TELEMETRY_EVENT, system_info)
-                    .is_err()
-                {
-                    break;
-                }
-
-                let mic_level = audio_handle
-                    .try_state::<audio::AudioState>()
-                    .and_then(|state| {
-                        let stream = state.stream.lock().ok()?;
-                        stream.as_ref().map(audio::get_level)
-                    })
-                    .and_then(Result::ok)
-                    .unwrap_or(0.0);
-
-                if audio_handle.emit(VOICE_TELEMETRY_EVENT, mic_level).is_err() {
-                    break;
-                }
-
-                std::thread::sleep(Duration::from_millis(100));
-            });
-
-            Ok(())
-        })
+    let builder = tauri::Builder::default()
+        .manage(audio::AudioState::default())
+        .manage(core_supervisor::CoreSupervisor::new())
         .invoke_handler(tauri::generate_handler![
             get_system_info,
             get_core_status,
             submit_text,
             start_voice,
             stop_voice,
-            get_voice_level,
-        ])
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        ]);
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::Exit = event {
-            let _ = app_handle
-                .state::<audio::AudioState>()
-                .stream
-                .lock()
-                .map(|mut s| {
-                    *s = None;
-                });
-            app_handle
-                .state::<core_supervisor::CoreSupervisor>()
-                .shutdown_and_join();
-        }
-    });
+    let app = builder
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let supervisor = app.state::<core_supervisor::CoreSupervisor>().inner().clone();
+            supervisor.start(handle.clone());
+
+            let telemetry_handle = handle.clone();
+            std::thread::spawn(move || loop {
+                let info = device_gateway::snapshot_system_info();
+                if telemetry_handle
+                    .emit(SYSTEM_TELEMETRY_EVENT, &info)
+                    .is_err()
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            });
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running NAVEEN AI");
 }
