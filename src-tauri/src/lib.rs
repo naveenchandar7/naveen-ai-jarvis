@@ -1,5 +1,6 @@
 #![cfg_attr(mobile, tauri::mobile_entry_point)]
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{Emitter, Manager, State};
@@ -25,12 +26,13 @@ mod capabilities;
 )]
 mod core_supervisor;
 mod device_gateway;
-mod device_security;
 #[expect(
     dead_code,
     reason = "Device Fabric is the provider-independent node boundary; runtime registration and routing are integrated incrementally behind its stable contract."
 )]
 mod device_fabric;
+mod device_identity;
+mod device_security;
 #[expect(
     dead_code,
     reason = "IPC retains replaceable transport/audit abstractions whose public surface is exercised incrementally by the live runtime."
@@ -111,6 +113,42 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             let handle = app.handle().clone();
+            let node_id = device_identity::load_or_create_node_id(&handle)
+                .map_err(|_| "Failed to establish host node identity")?;
+            let mut fabric = device_fabric::DeviceFabric::new(
+                device_fabric::NodeDescriptor::new(
+                    node_id.clone(),
+                    "host",
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .map_err(|_| "Failed to build host node descriptor")?,
+            );
+
+            for capability_id in [
+                capabilities::SYSTEM_TELEMETRY_READ,
+                capabilities::FILESYSTEM_READ_TEXT,
+                network_gateway::MODEL_COMPLETE,
+                network_gateway::NETWORK_FETCH_TEXT,
+            ] {
+                fabric
+                    .advertise_capability(capability_id)
+                    .map_err(|_| "Failed to advertise host capability")?;
+            }
+
+            fabric
+                .enroll_device(
+                    node_id,
+                    device_security::DeviceTrust::Trusted,
+                    [
+                        security::Permission::SystemTelemetryRead,
+                        security::Permission::FilesystemRead,
+                        security::Permission::NetworkAccess,
+                    ],
+                )
+                .map_err(|_| "Failed to enroll host device")?;
+            fabric.set_health(device_fabric::NodeHealth::Healthy);
+            app.manage(Mutex::new(fabric));
+
             let config = core_supervisor::CoreLaunchConfig::from_app(&handle)
                 .map_err(|_| "Failed to build NAVEEN Core launch configuration")?;
             app.manage(core_supervisor::CoreSupervisor::start(config, handle.clone()));
