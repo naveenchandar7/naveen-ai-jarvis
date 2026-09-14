@@ -107,11 +107,7 @@ impl SecurityGateway {
             return SecurityDecision::Deny(SecurityDenial::EmptyCapabilityId);
         }
 
-        let Some(policy) = self
-            .policies
-            .iter()
-            .find(|policy| policy.capability_id == request.capability_id)
-        else {
+        let Some(policy) = self.find_policy(&request.capability_id) else {
             return SecurityDecision::Deny(SecurityDenial::CapabilityNotRegistered);
         };
 
@@ -120,6 +116,29 @@ impl SecurityGateway {
         }
 
         SecurityDecision::Allow
+    }
+
+    /// Return the host-owned permission set for a registered capability.
+    ///
+    /// Callers must consume this metadata instead of supplying or overriding
+    /// the permission requirements themselves.
+    pub fn required_permissions(
+        &self,
+        capability_id: &str,
+    ) -> Result<&[Permission], SecurityDenial> {
+        if capability_id.trim().is_empty() {
+            return Err(SecurityDenial::EmptyCapabilityId);
+        }
+
+        self.find_policy(capability_id)
+            .map(|policy| policy.permissions())
+            .ok_or(SecurityDenial::CapabilityNotRegistered)
+    }
+
+    fn find_policy(&self, capability_id: &str) -> Option<&CapabilityPolicy> {
+        self.policies
+            .iter()
+            .find(|policy| policy.capability_id == capability_id)
     }
 }
 
@@ -222,6 +241,26 @@ mod tests {
         assert_eq!(
             gateway.authorize_at(1_000, Some(&session()), &request(), false),
             SecurityDecision::RequireConfirmation
+        );
+    }
+
+    #[test]
+    fn required_permissions_are_host_owned() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+
+        assert_eq!(
+            gateway.required_permissions("system.telemetry.read"),
+            Ok([Permission::SystemTelemetryRead].as_slice())
+        );
+    }
+
+    #[test]
+    fn required_permissions_reject_unknown_capabilities() {
+        let gateway = SecurityGateway::new(vec![]);
+
+        assert_eq!(
+            gateway.required_permissions("unknown"),
+            Err(SecurityDenial::CapabilityNotRegistered)
         );
     }
 }
