@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 const NODE_ID_FILE: &str = "node_id.txt";
 const NODE_ID_PREFIX: &str = "node-";
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum DeviceIdentityError {
     AppDataDirectory,
     DirectoryCreate,
