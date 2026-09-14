@@ -36,9 +36,9 @@ impl DeviceRecord {
     }
 
     fn allows_all(&self, permissions: &[Permission]) -> bool {
-        permissions.iter().all(|permission| {
-            self.allowed_permissions.contains(permission)
-        })
+        permissions
+            .iter()
+            .all(|permission| self.allowed_permissions.contains(permission))
     }
 }
 
