@@ -131,6 +131,10 @@ impl DeviceFabric {
         self.devices.authorize(device_id, required_permissions)?;
         Ok(())
     }
+
+    pub(crate) fn device_registry(&self) -> &DeviceRegistry {
+        &self.devices
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
