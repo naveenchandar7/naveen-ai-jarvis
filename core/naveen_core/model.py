@@ -23,6 +23,33 @@ class ModelConfig:
     api_style: str = "openai_compatible"
     credential_ref: str | None = None
 
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ModelConfig":
+        """Build runtime configuration from the process environment."""
+        values = os.environ if environ is None else environ
+        provider = values.get("NAVEEN_MODEL_PROVIDER", "").strip()
+        endpoint = values.get("NAVEEN_MODEL_ENDPOINT", "").strip() or None
+        model = values.get("NAVEEN_MODEL_NAME", "").strip() or None
+        api_style = values.get("NAVEEN_MODEL_API_STYLE", "openai_compatible").strip()
+        credential_ref = values.get("NAVEEN_MODEL_CREDENTIAL_REF", "").strip() or None
+
+        if not provider:
+            if endpoint and model:
+                provider = "host-routed-model"
+            else:
+                provider = "template-offline"
+
+        if not api_style:
+            raise ValueError("NAVEEN_MODEL_API_STYLE must not be empty")
+
+        return cls(
+            provider=provider,
+            endpoint=endpoint,
+            model=model,
+            api_style=api_style,
+            credential_ref=credential_ref,
+        )
+
 
 @dataclass(frozen=True)
 class ModelRequest:
@@ -114,14 +141,18 @@ class ModelManager:
         self,
         provider: ModelProvider | None = None,
         providers: Mapping[ModelTask, ModelProvider] | None = None,
+        config: ModelConfig | None = None,
     ) -> None:
+        runtime_config = config or ModelConfig.from_environment()
+
         if provider is not None:
             default_provider = provider
-        elif os.getenv("NAVEEN_MODEL_ENDPOINT") and os.getenv("NAVEEN_MODEL_NAME"):
+        elif runtime_config.provider == "host-routed-model":
             default_provider = HostRoutedModelProvider()
         else:
             default_provider = TemplateModelProvider()
 
+        self.config = runtime_config
         self.registry = ModelProviderRegistry()
         self.register_provider(default_provider)
 
