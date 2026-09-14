@@ -1,4 +1,5 @@
 use crate::auth::AuthenticatedSession;
+use crate::device_security::{DeviceRegistry, DeviceSecurityError};
 use serde::{Deserialize, Serialize};
 
 /// Version of the host-side authorization policy contract.
@@ -73,6 +74,9 @@ pub enum SecurityDenial {
     EmptyCapabilityId,
     CapabilityNotRegistered,
     HighRiskRequiresConfirmation,
+    DeviceNotRegistered,
+    DeviceNotTrusted,
+    DevicePermissionNotGranted,
 }
 
 /// Deny-by-default authorization policy owned by the Rust host.
@@ -118,6 +122,44 @@ impl SecurityGateway {
         SecurityDecision::Allow
     }
 
+    /// Authorize a capability against both the authenticated session and the
+    /// target device's host-owned trust/permission policy.
+    pub fn authorize_for_device_at(
+        &self,
+        now_ms: u64,
+        session: Option<&AuthenticatedSession>,
+        device_id: &str,
+        request: &CapabilityRequest,
+        confirmed: bool,
+        devices: &DeviceRegistry,
+    ) -> SecurityDecision {
+        match self.authorize_at(now_ms, session, request, confirmed) {
+            SecurityDecision::Allow => {}
+            decision => return decision,
+        }
+
+        let required_permissions = match self.required_permissions(&request.capability_id) {
+            Ok(permissions) => permissions,
+            Err(reason) => return SecurityDecision::Deny(reason),
+        };
+
+        match devices.authorize(device_id, required_permissions) {
+            Ok(()) => SecurityDecision::Allow,
+            Err(DeviceSecurityError::DeviceNotRegistered) => {
+                SecurityDecision::Deny(SecurityDenial::DeviceNotRegistered)
+            }
+            Err(DeviceSecurityError::DeviceNotTrusted) => {
+                SecurityDecision::Deny(SecurityDenial::DeviceNotTrusted)
+            }
+            Err(DeviceSecurityError::PermissionNotGranted) => {
+                SecurityDecision::Deny(SecurityDenial::DevicePermissionNotGranted)
+            }
+            Err(DeviceSecurityError::InvalidDeviceId | DeviceSecurityError::DeviceAlreadyRegistered) => {
+                SecurityDecision::Deny(SecurityDenial::DeviceNotRegistered)
+            }
+        }
+    }
+
     /// Return the host-owned permission set for a registered capability.
     ///
     /// Callers must consume this metadata instead of supplying or overriding
@@ -146,6 +188,7 @@ impl SecurityGateway {
 mod tests {
     use super::*;
     use crate::auth::test_session;
+    use crate::device_security::{DeviceRecord, DeviceTrust};
 
     fn session() -> AuthenticatedSession {
         test_session(10_000)
@@ -163,6 +206,21 @@ mod tests {
         CapabilityRequest {
             capability_id: "system.telemetry.read".to_string(),
         }
+    }
+
+    fn trusted_device() -> DeviceRegistry {
+        let mut devices = DeviceRegistry::new();
+        devices
+            .register(
+                DeviceRecord::new(
+                    "pi-01",
+                    DeviceTrust::Trusted,
+                    [Permission::SystemTelemetryRead],
+                )
+                .expect("valid device"),
+            )
+            .expect("registration succeeds");
+        devices
     }
 
     #[test]
@@ -261,6 +319,97 @@ mod tests {
         assert_eq!(
             gateway.required_permissions("unknown"),
             Err(SecurityDenial::CapabilityNotRegistered)
+        );
+    }
+
+    #[test]
+    fn authenticated_trusted_device_with_required_permission_is_allowed() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let devices = trusted_device();
+
+        assert_eq!(
+            gateway.authorize_for_device_at(
+                1_000,
+                Some(&session()),
+                "pi-01",
+                &request(),
+                false,
+                &devices,
+            ),
+            SecurityDecision::Allow
+        );
+    }
+
+    #[test]
+    fn authenticated_untrusted_device_is_denied() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let mut devices = trusted_device();
+        devices
+            .set_trust("pi-01", DeviceTrust::Quarantined)
+            .expect("device exists");
+
+        assert_eq!(
+            gateway.authorize_for_device_at(
+                1_000,
+                Some(&session()),
+                "pi-01",
+                &request(),
+                false,
+                &devices,
+            ),
+            SecurityDecision::Deny(SecurityDenial::DeviceNotTrusted)
+        );
+    }
+
+    #[test]
+    fn authenticated_device_without_required_permission_is_denied() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let mut devices = DeviceRegistry::new();
+        devices
+            .register(
+                DeviceRecord::new(
+                    "pi-02",
+                    DeviceTrust::Trusted,
+                    [Permission::SystemTelemetryRead],
+                )
+                .expect("valid device"),
+            )
+            .expect("registration succeeds");
+
+        let gateway = SecurityGateway::new(vec![CapabilityPolicy::new(
+            "system.telemetry.read",
+            vec![Permission::FilesystemWrite],
+            RiskLevel::Low,
+        )]);
+
+        assert_eq!(
+            gateway.authorize_for_device_at(
+                1_000,
+                Some(&session()),
+                "pi-02",
+                &request(),
+                false,
+                &devices,
+            ),
+            SecurityDecision::Deny(SecurityDenial::DevicePermissionNotGranted)
+        );
+    }
+
+    #[test]
+    fn authentication_fails_before_device_checks() {
+        let gateway = SecurityGateway::new(vec![policy(RiskLevel::Low)]);
+        let devices = trusted_device();
+
+        assert_eq!(
+            gateway.authorize_for_device_at(
+                1_000,
+                None,
+                "unknown-device",
+                &request(),
+                false,
+                &devices,
+            ),
+            SecurityDecision::Deny(SecurityDenial::Unauthenticated)
         );
     }
 }
