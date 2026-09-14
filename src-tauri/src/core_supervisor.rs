@@ -349,36 +349,34 @@ fn establish_and_run(
         .map_err(|_| CoreSupervisorError::Authentication)?;
     send_control(process.transport(), &challenge_to_wire(&challenge))?;
 
-    let response: ChallengeResponse = match recv_control(
-        process.transport(),
-        Duration::from_secs(5),
-    )? {
-        CoreControlMessage::AuthResponse {
-            ipc_protocol_version,
-            auth_protocol_version,
-            launch_id,
-            challenge_id,
-            client_id,
-            correlation_id,
-            proof,
-        } => {
-            if ipc_protocol_version != crate::ipc::IPC_PROTOCOL_VERSION
-                || auth_protocol_version != AUTH_PROTOCOL_VERSION
-            {
-                return Err(CoreSupervisorError::Handshake);
-            }
-
-            ChallengeResponse {
-                protocol_version: auth_protocol_version,
-                launch_id: crate::auth::LaunchId::from_bytes(array_16(&launch_id)?),
-                challenge_id: crate::auth::ChallengeId::from_bytes(array_16(&challenge_id)?),
+    let response: ChallengeResponse =
+        match recv_control(process.transport(), Duration::from_secs(5))? {
+            CoreControlMessage::AuthResponse {
+                ipc_protocol_version,
+                auth_protocol_version,
+                launch_id,
+                challenge_id,
                 client_id,
                 correlation_id,
-                proof: array_32(&proof)?,
+                proof,
+            } => {
+                if ipc_protocol_version != crate::ipc::IPC_PROTOCOL_VERSION
+                    || auth_protocol_version != AUTH_PROTOCOL_VERSION
+                {
+                    return Err(CoreSupervisorError::Handshake);
+                }
+
+                ChallengeResponse {
+                    protocol_version: auth_protocol_version,
+                    launch_id: crate::auth::LaunchId::from_bytes(array_16(&launch_id)?),
+                    challenge_id: crate::auth::ChallengeId::from_bytes(array_16(&challenge_id)?),
+                    client_id,
+                    correlation_id,
+                    proof: array_32(&proof)?,
+                }
             }
-        }
-        _ => return Err(CoreSupervisorError::Handshake),
-    };
+            _ => return Err(CoreSupervisorError::Handshake),
+        };
 
     let session = auth
         .complete_challenge(&response, now_ms())
@@ -398,14 +396,7 @@ fn establish_and_run(
     connected.store(true, Ordering::Release);
     log::info!("NAVEEN Core authenticated");
     heartbeat_loop(
-        config,
-        process,
-        app_handle,
-        command_rx,
-        stop,
-        auth,
-        &session,
-        connected,
+        config, process, app_handle, command_rx, stop, auth, &session, connected,
     )
 }
 
@@ -419,10 +410,8 @@ fn heartbeat_loop(
     session: &AuthenticatedSession,
     connected: &Arc<AtomicBool>,
 ) -> Result<(), CoreSupervisorError> {
-    let registry = HostCapabilityRegistry::new(
-        config.workspace_root.clone(),
-        NetworkGateway::default(),
-    );
+    let registry =
+        HostCapabilityRegistry::new(config.workspace_root.clone(), NetworkGateway::default());
     let security = SecurityGateway::new(vec![
         CapabilityPolicy::new(
             SYSTEM_TELEMETRY_READ,
@@ -550,11 +539,8 @@ fn send_core_event(
         payload,
         proof: None,
     };
-    let frame = encode_frame(
-        &crate::ipc::JsonIpcCodec,
-        &IpcEnvelope::Event(event),
-    )
-    .map_err(|_| CoreSupervisorError::Protocol)?;
+    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &IpcEnvelope::Event(event))
+        .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
         .send_frame(&frame)
         .map_err(|_| CoreSupervisorError::Transport)
@@ -602,32 +588,27 @@ fn handle_core_event(
             let capability_request = CapabilityRequest {
                 capability_id: payload.capability_id.clone(),
             };
-            let decision = security.authorize_at(
-                now_ms(),
-                Some(session),
-                &capability_request,
-                false,
-            );
+            let decision =
+                security.authorize_at(now_ms(), Some(session), &capability_request, false);
 
             let response_payload = match decision {
-                SecurityDecision::Allow => match registry.execute(
-                    &payload.capability_id,
-                    payload.input,
-                ) {
-                    Ok(value) => json!({
-                        "request_id": payload.request_id,
-                        "capability_id": payload.capability_id,
-                        "ok": true,
-                        "output": value,
-                    }),
-                    Err(error) => json!({
-                        "request_id": payload.request_id,
-                        "capability_id": payload.capability_id,
-                        "ok": false,
-                        "output": {},
-                        "error": error,
-                    }),
-                },
+                SecurityDecision::Allow => {
+                    match registry.execute(&payload.capability_id, payload.input) {
+                        Ok(value) => json!({
+                            "request_id": payload.request_id,
+                            "capability_id": payload.capability_id,
+                            "ok": true,
+                            "output": value,
+                        }),
+                        Err(error) => json!({
+                            "request_id": payload.request_id,
+                            "capability_id": payload.capability_id,
+                            "ok": false,
+                            "output": {},
+                            "error": error,
+                        }),
+                    }
+                }
                 SecurityDecision::RequireConfirmation => json!({
                     "request_id": payload.request_id,
                     "capability_id": payload.capability_id,
@@ -653,8 +634,8 @@ fn handle_core_event(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             let event_id = format!("capability-result-{request_id}");
-            let event_payload = serde_json::to_vec(&response_payload)
-                .map_err(|_| CoreSupervisorError::Protocol)?;
+            let event_payload =
+                serde_json::to_vec(&response_payload).map_err(|_| CoreSupervisorError::Protocol)?;
             send_core_event(
                 transport,
                 session,
@@ -715,12 +696,7 @@ fn handle_core_request(
         let capability_request = CapabilityRequest {
             capability_id: payload.capability_id.clone(),
         };
-        let decision = security.authorize_at(
-            now_ms(),
-            Some(session),
-            &capability_request,
-            false,
-        );
+        let decision = security.authorize_at(now_ms(), Some(session), &capability_request, false);
 
         let response_payload = match decision {
             SecurityDecision::Allow => {
@@ -786,11 +762,8 @@ fn send_response(
         payload,
         proof: None,
     };
-    let frame = encode_frame(
-        &crate::ipc::JsonIpcCodec,
-        &IpcEnvelope::Response(response),
-    )
-    .map_err(|_| CoreSupervisorError::Protocol)?;
+    let frame = encode_frame(&crate::ipc::JsonIpcCodec, &IpcEnvelope::Response(response))
+        .map_err(|_| CoreSupervisorError::Protocol)?;
     transport
         .send_frame(&frame)
         .map_err(|_| CoreSupervisorError::Transport)
@@ -877,9 +850,7 @@ fn recv_control<T: DeserializeOwned>(
     }
 
     let declared = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-    if declared == 0
-        || declared > crate::ipc::IPC_MAX_WIRE_BODY_SIZE
-        || frame.len() != declared + 4
+    if declared == 0 || declared > crate::ipc::IPC_MAX_WIRE_BODY_SIZE || frame.len() != declared + 4
     {
         return Err(CoreSupervisorError::Protocol);
     }

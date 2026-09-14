@@ -3,10 +3,41 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 
-class KnowledgeStore:
-    """Provider-independent local document index for the Core's first RAG slice."""
+KnowledgeRecord = dict[str, object]
+
+
+class EmbeddingProvider(Protocol):
+    """Optional semantic-embedding boundary for future RAG implementations."""
+
+    name: str
+
+    def embed(self, text: str) -> list[float]:
+        ...
+
+
+@runtime_checkable
+class KnowledgeProvider(Protocol):
+    """Stable Core contract for indexed document retrieval."""
+
+    name: str
+
+    def upsert(self, path: str, content: str, *, source: str = "filesystem") -> None:
+        ...
+
+    def search(self, query: str, *, limit: int = 8) -> list[KnowledgeRecord]:
+        ...
+
+    def remove(self, path: str) -> int:
+        ...
+
+
+class SQLiteKnowledgeStore:
+    """Current local keyword-search implementation of KnowledgeProvider."""
+
+    name = "sqlite-knowledge-keyword"
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -50,7 +81,7 @@ class KnowledgeStore:
         )
         self._connection.commit()
 
-    def search(self, query: str, *, limit: int = 8) -> list[dict[str, object]]:
+    def search(self, query: str, *, limit: int = 8) -> list[KnowledgeRecord]:
         terms = [term for term in query.casefold().split() if len(term) >= 2][:8]
         if not terms:
             return []

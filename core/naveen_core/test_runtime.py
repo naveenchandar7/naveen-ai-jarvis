@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from core_client import CoreClient
+from knowledge import SQLiteKnowledgeStore
 from memory import SQLiteMemoryStore
 from model import ModelManager
 from orchestrator import Orchestrator
@@ -39,8 +40,12 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         memory = SQLiteMemoryStore(f"{self.temp.name}/memory.db")
+        knowledge = SQLiteKnowledgeStore(memory.connection)
         self.client = FakeClient()
-        self.runtime = CoreRuntime(self.client, Orchestrator(memory, ModelManager()))
+        self.runtime = CoreRuntime(
+            self.client,
+            Orchestrator(memory, ModelManager(), knowledge=knowledge),
+        )
 
     def tearDown(self):
         self.runtime.orchestrator.memory.close()

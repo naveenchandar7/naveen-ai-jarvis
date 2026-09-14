@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from memory import SQLiteMemoryStore
+from memory import MemoryStore, SQLiteMemoryStore
 
 
 class MemoryTests(unittest.TestCase):
@@ -31,6 +31,12 @@ class MemoryTests(unittest.TestCase):
             rows = store.recall("Java", namespace="learning")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["content"], "Java learning plan")
+            store.close()
+
+    def test_sqlite_implementation_satisfies_memory_store_contract(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SQLiteMemoryStore(f"{temp}/memory.db")
+            self.assertIsInstance(store, MemoryStore)
             store.close()
 
 

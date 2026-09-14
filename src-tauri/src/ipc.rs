@@ -229,7 +229,9 @@ fn validate_envelope(envelope: &IpcEnvelope) -> Result<(), IpcError> {
                 ResponseStatus::Ok if message.error_code.is_some() => {
                     return Err(IpcError::InvalidEnvelope("error_code"));
                 }
-                ResponseStatus::Error | ResponseStatus::Rejected if message.error_code.is_none() => {
+                ResponseStatus::Error | ResponseStatus::Rejected
+                    if message.error_code.is_none() =>
+                {
                     return Err(IpcError::InvalidEnvelope("error_code"));
                 }
                 _ => {}
@@ -456,7 +458,9 @@ impl<T: IpcTransport, C: IpcCodec> IpcConnection<T, C> {
 
     fn record_protocol_error(&mut self, error: &IpcError) {
         let reason = match error {
-            IpcError::UnsupportedProtocolVersion { .. } => IpcAuditReason::UnsupportedProtocolVersion,
+            IpcError::UnsupportedProtocolVersion { .. } => {
+                IpcAuditReason::UnsupportedProtocolVersion
+            }
             IpcError::OversizedFrame => IpcAuditReason::OversizedFrame,
             IpcError::InvalidEnvelope(_) => IpcAuditReason::InvalidEnvelope,
             _ => IpcAuditReason::MalformedFrame,
@@ -485,7 +489,11 @@ impl<T: IpcTransport, C: IpcCodec> Drop for IpcConnection<T, C> {
     }
 }
 
-pub struct AuthenticatedCoreChannel<T: IpcTransport, C: IpcCodec = JsonIpcCodec, A: AuthenticationProvider = crate::auth::AuthenticationServer<crate::auth::PlatformCrypto>> {
+pub struct AuthenticatedCoreChannel<
+    T: IpcTransport,
+    C: IpcCodec = JsonIpcCodec,
+    A: AuthenticationProvider = crate::auth::AuthenticationServer<crate::auth::PlatformCrypto>,
+> {
     connection: IpcConnection<T, C>,
     auth: A,
     session: AuthenticatedSession,
@@ -498,12 +506,7 @@ impl<T: IpcTransport, A: AuthenticationProvider> AuthenticatedCoreChannel<T, Jso
 }
 
 impl<T: IpcTransport, C: IpcCodec, A: AuthenticationProvider> AuthenticatedCoreChannel<T, C, A> {
-    pub fn with_codec(
-        transport: T,
-        codec: C,
-        auth: A,
-        session: AuthenticatedSession,
-    ) -> Self {
+    pub fn with_codec(transport: T, codec: C, auth: A, session: AuthenticatedSession) -> Self {
         Self {
             connection: IpcConnection::with_codec(transport, codec),
             auth,
@@ -511,7 +514,11 @@ impl<T: IpcTransport, C: IpcCodec, A: AuthenticationProvider> AuthenticatedCoreC
         }
     }
 
-    pub fn receive_request(&mut self, timeout: Duration, now_ms: u64) -> Result<RequestEnvelope, IpcError> {
+    pub fn receive_request(
+        &mut self,
+        timeout: Duration,
+        now_ms: u64,
+    ) -> Result<RequestEnvelope, IpcError> {
         let envelope = self.connection.receive(timeout)?;
         let request = match envelope {
             IpcEnvelope::Request(request) => request,
@@ -565,16 +572,17 @@ impl<T: IpcTransport, C: IpcCodec, A: AuthenticationProvider> AuthenticatedCoreC
             return Err(IpcError::SessionMismatch);
         }
 
-        self.connection.send(&IpcEnvelope::Response(ResponseEnvelope {
-            protocol_version: IPC_PROTOCOL_VERSION,
-            correlation_id: request.correlation_id.clone(),
-            session_id: request.session_id,
-            sequence: request.sequence,
-            status,
-            error_code,
-            payload,
-            proof: None,
-        }))
+        self.connection
+            .send(&IpcEnvelope::Response(ResponseEnvelope {
+                protocol_version: IPC_PROTOCOL_VERSION,
+                correlation_id: request.correlation_id.clone(),
+                session_id: request.session_id,
+                sequence: request.sequence,
+                status,
+                error_code,
+                payload,
+                proof: None,
+            }))
     }
 
     pub fn send_event(
@@ -640,7 +648,8 @@ impl PendingRequests {
 
     pub fn accept_response(&mut self, response: &ResponseEnvelope) -> Result<(), IpcError> {
         validate_envelope(&IpcEnvelope::Response(response.clone()))?;
-        let Some((session_id, sequence)) = self.pending.get(&response.correlation_id).copied() else {
+        let Some((session_id, sequence)) = self.pending.get(&response.correlation_id).copied()
+        else {
             return Err(IpcError::UnknownCorrelation);
         };
 
@@ -774,13 +783,25 @@ impl WindowsLocalPipeTransport {
 
             let mut parent_read: Handle = std::ptr::null_mut();
             let mut child_write: Handle = std::ptr::null_mut();
-            if CreatePipe(&mut parent_read, &mut child_write, &mut attributes, 64 * 1024) == 0 {
+            if CreatePipe(
+                &mut parent_read,
+                &mut child_write,
+                &mut attributes,
+                64 * 1024,
+            ) == 0
+            {
                 return Err(last_os_error("CreatePipe parent-read"));
             }
 
             let mut child_read: Handle = std::ptr::null_mut();
             let mut parent_write: Handle = std::ptr::null_mut();
-            if CreatePipe(&mut child_read, &mut parent_write, &mut attributes, 64 * 1024) == 0 {
+            if CreatePipe(
+                &mut child_read,
+                &mut parent_write,
+                &mut attributes,
+                64 * 1024,
+            ) == 0
+            {
                 CloseHandle(parent_read);
                 CloseHandle(child_write);
                 return Err(last_os_error("CreatePipe child-read"));
@@ -850,14 +871,19 @@ impl WindowsLocalPipeTransport {
 #[cfg(windows)]
 impl IpcTransport for WindowsLocalPipeTransport {
     fn send_frame(&mut self, frame: &[u8]) -> Result<(), IpcError> {
-        if frame.len() < FRAME_HEADER_LEN || frame.len() > FRAME_HEADER_LEN + IPC_MAX_WIRE_BODY_SIZE {
+        if frame.len() < FRAME_HEADER_LEN || frame.len() > FRAME_HEADER_LEN + IPC_MAX_WIRE_BODY_SIZE
+        {
             return Err(IpcError::OversizedFrame);
         }
         let Some(write) = self.write.as_mut() else {
             return Err(IpcError::Closed);
         };
-        write.write_all(frame).map_err(|error| map_pipe_error(error, "write"))?;
-        write.flush().map_err(|error| map_pipe_error(error, "flush"))?;
+        write
+            .write_all(frame)
+            .map_err(|error| map_pipe_error(error, "write"))?;
+        write
+            .flush()
+            .map_err(|error| map_pipe_error(error, "flush"))?;
         Ok(())
     }
 
@@ -1258,7 +1284,7 @@ mod tests {
             session(),
         );
         let envelope = request(1);
-        let proof_text = format!("{:?}", &envelope);
+        let proof_text = format!("{:?}", envelope);
         client.send(&envelope).expect("send");
         let _ = host.receive_request(IPC_DEFAULT_TIMEOUT, 1_000);
         let audit = format!("{:?}", host.take_audit_events());

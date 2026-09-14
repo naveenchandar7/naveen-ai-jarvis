@@ -88,8 +88,8 @@ impl NetworkGateway {
             .limit(MAX_RESPONSE_BYTES)
             .read_to_string()
             .map_err(|error| format!("model response read failed: {error}"))?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|_| "model returned malformed JSON".to_string())?;
+        let value: Value =
+            serde_json::from_str(&raw).map_err(|_| "model returned malformed JSON".to_string())?;
 
         let content = if self.model_style == "ollama" {
             value["message"]["content"].as_str()
@@ -121,9 +121,7 @@ impl NetworkGateway {
 
     fn ensure_model_allowed(&self, url: &str) -> Result<(), String> {
         let origin = normalize_origin(url).ok_or_else(|| "invalid model endpoint".to_string())?;
-        if is_loopback_origin(&origin)
-            || self.allowlist.iter().any(|allowed| origin == *allowed)
-        {
+        if is_loopback_origin(&origin) || self.allowlist.iter().any(|allowed| origin == *allowed) {
             return Ok(());
         }
         Err("model endpoint is not allowlisted".to_string())
@@ -140,7 +138,10 @@ impl NetworkGateway {
 
 fn normalize_origin(url: &str) -> Option<String> {
     let trimmed = url.trim();
-    if trimmed.bytes().any(|byte| byte.is_ascii_whitespace() || byte == b'\\') {
+    if trimmed
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || byte == b'\\')
+    {
         return None;
     }
 

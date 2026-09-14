@@ -21,9 +21,7 @@ pub fn start_microphone() -> Result<AudioInput, String> {
 
     let supported_config = device
         .default_input_config()
-        .map_err(|error| {
-            format!("Failed to get microphone config: {error}")
-        })?;
+        .map_err(|error| format!("Failed to get microphone config: {error}"))?;
 
     let config: StreamConfig = supported_config.clone().into();
 
@@ -44,9 +42,7 @@ pub fn start_microphone() -> Result<AudioInput, String> {
                 err_fn,
                 None,
             )
-            .map_err(|error| {
-                format!("Failed to build F32 input stream: {error}")
-            })?,
+            .map_err(|error| format!("Failed to build F32 input stream: {error}"))?,
 
         SampleFormat::I16 => {
             let level_for_callback = Arc::clone(&level);
@@ -57,24 +53,15 @@ pub fn start_microphone() -> Result<AudioInput, String> {
                     move |data: &[i16], _| {
                         let samples: Vec<f32> = data
                             .iter()
-                            .map(|sample| {
-                                *sample as f32 / i16::MAX as f32
-                            })
+                            .map(|sample| *sample as f32 / i16::MAX as f32)
                             .collect();
 
-                        update_level(
-                            &samples,
-                            &level_for_callback,
-                        );
+                        update_level(&samples, &level_for_callback);
                     },
                     err_fn,
                     None,
                 )
-                .map_err(|error| {
-                    format!(
-                        "Failed to build I16 input stream: {error}"
-                    )
-                })?
+                .map_err(|error| format!("Failed to build I16 input stream: {error}"))?
         }
 
         SampleFormat::U16 => {
@@ -86,25 +73,15 @@ pub fn start_microphone() -> Result<AudioInput, String> {
                     move |data: &[u16], _| {
                         let samples: Vec<f32> = data
                             .iter()
-                            .map(|sample| {
-                                (*sample as f32 - 32768.0)
-                                    / 32768.0
-                            })
+                            .map(|sample| (*sample as f32 - 32768.0) / 32768.0)
                             .collect();
 
-                        update_level(
-                            &samples,
-                            &level_for_callback,
-                        );
+                        update_level(&samples, &level_for_callback);
                     },
                     err_fn,
                     None,
                 )
-                .map_err(|error| {
-                    format!(
-                        "Failed to build U16 input stream: {error}"
-                    )
-                })?
+                .map_err(|error| format!("Failed to build U16 input stream: {error}"))?
         }
 
         unsupported => {
@@ -116,11 +93,7 @@ pub fn start_microphone() -> Result<AudioInput, String> {
 
     stream
         .play()
-        .map_err(|error| {
-            format!(
-                "Failed to start microphone stream: {error}"
-            )
-        })?;
+        .map_err(|error| format!("Failed to start microphone stream: {error}"))?;
 
     Ok(AudioInput { stream, level })
 }
@@ -130,9 +103,7 @@ pub fn get_level(input: &AudioInput) -> Result<f32, String> {
         .level
         .lock()
         .map(|level| *level)
-        .map_err(|_| {
-            "Microphone level lock failed".to_string()
-        })
+        .map_err(|_| "Microphone level lock failed".to_string())
 }
 
 fn update_level(samples: &[f32], level: &Arc<Mutex<f32>>) {
@@ -140,10 +111,7 @@ fn update_level(samples: &[f32], level: &Arc<Mutex<f32>>) {
         return;
     }
 
-    let sum = samples
-        .iter()
-        .map(|sample| sample * sample)
-        .sum::<f32>();
+    let sum = samples.iter().map(|sample| sample * sample).sum::<f32>();
 
     let rms = (sum / samples.len() as f32).sqrt();
 

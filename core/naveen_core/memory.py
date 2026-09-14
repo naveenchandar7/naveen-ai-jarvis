@@ -3,9 +3,46 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+
+MemoryRecord = dict[str, object]
+
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """Stable Core contract for durable/policy-gated personal memory."""
+
+    def save(
+        self,
+        content: str,
+        *,
+        namespace: str = "long-term",
+        source: str = "user",
+    ) -> int:
+        ...
+
+    def recall(
+        self,
+        query: str = "",
+        *,
+        namespace: str | None = None,
+        limit: int = 8,
+    ) -> list[MemoryRecord]:
+        ...
+
+    def forget(self, query: str, *, namespace: str | None = None) -> int:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 class SQLiteMemoryStore:
+    """Current local implementation of the replaceable MemoryStore contract."""
+
+    name = "sqlite-memory"
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +97,7 @@ class SQLiteMemoryStore:
         *,
         namespace: str | None = None,
         limit: int = 8,
-    ) -> list[dict[str, object]]:
+    ) -> list[MemoryRecord]:
         limit = max(1, min(limit, 32))
         terms = [term for term in query.casefold().split() if len(term) >= 2][:8]
         clauses: list[str] = []

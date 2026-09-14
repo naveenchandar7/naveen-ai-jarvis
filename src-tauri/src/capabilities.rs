@@ -55,10 +55,10 @@ impl HostCapabilityRegistry {
             return Err("file exceeds the configured read limit".to_string());
         }
 
-        let bytes = fs::read(&canonical_candidate)
-            .map_err(|_| "file could not be read".to_string())?;
-        let content = String::from_utf8(bytes)
-            .map_err(|_| "file is not valid UTF-8 text".to_string())?;
+        let bytes =
+            fs::read(&canonical_candidate).map_err(|_| "file could not be read".to_string())?;
+        let content =
+            String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8 text".to_string())?;
         let relative = self.relative_workspace_path(&canonical_candidate)?;
 
         Ok(json!({
@@ -138,7 +138,9 @@ impl HostCapabilityRegistry {
             .trim();
         let lower = url.to_ascii_lowercase();
         if !(lower.starts_with("https://") || lower.starts_with("http://"))
-            || url.bytes().any(|byte| byte.is_ascii_whitespace() || byte == b'\\')
+            || url
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte == b'\\')
         {
             return Err("only http(s) URLs are allowed".to_string());
         }
@@ -286,7 +288,8 @@ mod tests {
     #[test]
     fn workspace_writes_are_bounded_and_confined() {
         let (root, workspace) = temp_workspace("naveen-write");
-        let registry = HostCapabilityRegistry::new(Some(workspace.clone()), NetworkGateway::default());
+        let registry =
+            HostCapabilityRegistry::new(Some(workspace.clone()), NetworkGateway::default());
 
         let value = registry
             .execute(
