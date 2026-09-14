@@ -12,6 +12,10 @@ MODEL_TASK_FAST_RESPONSE: ModelTask = "fast_response"
 MODEL_TASK_REASONING: ModelTask = "reasoning"
 MODEL_TASK_RESEARCH: ModelTask = "research_synthesis"
 
+MODEL_PROVIDER_TEMPLATE_OFFLINE = "template-offline"
+MODEL_PROVIDER_HOST_ROUTED = "host-routed-model"
+DEFAULT_MODEL_PROVIDER = MODEL_PROVIDER_TEMPLATE_OFFLINE
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -23,27 +27,24 @@ class ModelConfig:
     api_style: str = "openai_compatible"
     credential_ref: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.provider.strip():
+            raise ValueError("model provider must not be empty")
+        if not self.api_style.strip():
+            raise ValueError("model API style must not be empty")
+
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ModelConfig":
         """Build runtime configuration from the process environment."""
         values = os.environ if environ is None else environ
-        provider = values.get("NAVEEN_MODEL_PROVIDER", "").strip()
+        provider = values.get("NAVEEN_MODEL_PROVIDER", DEFAULT_MODEL_PROVIDER).strip()
         endpoint = values.get("NAVEEN_MODEL_ENDPOINT", "").strip() or None
         model = values.get("NAVEEN_MODEL_NAME", "").strip() or None
         api_style = values.get("NAVEEN_MODEL_API_STYLE", "openai_compatible").strip()
         credential_ref = values.get("NAVEEN_MODEL_CREDENTIAL_REF", "").strip() or None
 
-        if not provider:
-            if endpoint and model:
-                provider = "host-routed-model"
-            else:
-                provider = "template-offline"
-
-        if not api_style:
-            raise ValueError("NAVEEN_MODEL_API_STYLE must not be empty")
-
         return cls(
-            provider=provider,
+            provider=provider or DEFAULT_MODEL_PROVIDER,
             endpoint=endpoint,
             model=model,
             api_style=api_style,
@@ -68,7 +69,7 @@ class ModelProvider(Protocol):
 
 
 class TemplateModelProvider:
-    name = "template-offline"
+    name = MODEL_PROVIDER_TEMPLATE_OFFLINE
 
     def complete(
         self,
@@ -83,7 +84,7 @@ class TemplateModelProvider:
 
 
 class HostRoutedModelProvider:
-    name = "host-routed-model"
+    name = MODEL_PROVIDER_HOST_ROUTED
 
     def complete(
         self,
@@ -105,8 +106,11 @@ class HostRoutedModelProvider:
         return content.strip()
 
 
+ModelProviderFactory = Callable[[ModelConfig], ModelProvider]
+
+
 class ModelProviderRegistry:
-    """Named registry for replaceable model providers."""
+    """Named registry for instantiated, replaceable model providers."""
 
     def __init__(self) -> None:
         self._providers: dict[str, ModelProvider] = {}
@@ -134,25 +138,68 @@ class ModelProviderRegistry:
         return tuple(sorted(self._providers))
 
 
+class ModelProviderResolver:
+    """Resolve runtime provider configuration through registered factories."""
+
+    def __init__(self) -> None:
+        self._factories: dict[str, ModelProviderFactory] = {}
+
+    def register(self, provider_name: str, factory: ModelProviderFactory) -> None:
+        name = provider_name.strip()
+        if not name:
+            raise ValueError("model provider name must not be empty")
+        if name in self._factories:
+            raise ValueError(f"model provider factory already registered: {name}")
+        self._factories[name] = factory
+
+    def resolve(self, config: ModelConfig) -> ModelProvider:
+        try:
+            factory = self._factories[config.provider]
+        except KeyError as error:
+            raise KeyError(
+                f"model provider factory is not registered: {config.provider}"
+            ) from error
+        return factory(config)
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._factories))
+
+
+def create_default_model_provider_resolver() -> ModelProviderResolver:
+    """Create the built-in provider factory registry."""
+    resolver = ModelProviderResolver()
+    resolver.register(
+        TemplateModelProvider.name,
+        lambda config: TemplateModelProvider(),
+    )
+    resolver.register(
+        HostRoutedModelProvider.name,
+        lambda config: HostRoutedModelProvider(),
+    )
+    return resolver
+
+
 class ModelManager:
-    """Task-aware model router; concrete providers remain replaceable."""
+    """Task-aware model router; provider construction remains registry-driven."""
 
     def __init__(
         self,
         provider: ModelProvider | None = None,
         providers: Mapping[ModelTask, ModelProvider] | None = None,
         config: ModelConfig | None = None,
+        resolver: ModelProviderResolver | None = None,
     ) -> None:
         runtime_config = config or ModelConfig.from_environment()
+        provider_resolver = resolver or create_default_model_provider_resolver()
 
-        if provider is not None:
-            default_provider = provider
-        elif runtime_config.provider == "host-routed-model":
-            default_provider = HostRoutedModelProvider()
-        else:
-            default_provider = TemplateModelProvider()
+        default_provider = (
+            provider
+            if provider is not None
+            else provider_resolver.resolve(runtime_config)
+        )
 
         self.config = runtime_config
+        self.resolver = provider_resolver
         self.registry = ModelProviderRegistry()
         self.register_provider(default_provider)
 
@@ -206,15 +253,7 @@ class ModelManager:
         task: ModelTask = MODEL_TASK_CONVERSATION,
     ) -> str:
         provider = self.provider_for(task)
-
-        try:
-            return provider.complete(
-                ModelRequest(prompt=prompt),
-                capability_requester,
-            )
-        except RuntimeError:
-            if isinstance(provider, HostRoutedModelProvider):
-                return TemplateModelProvider().complete(
-                    ModelRequest(prompt=prompt)
-                )
-            raise
+        return provider.complete(
+            ModelRequest(prompt=prompt),
+            capability_requester,
+        )
