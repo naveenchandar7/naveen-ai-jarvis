@@ -14,6 +14,17 @@ MODEL_TASK_RESEARCH: ModelTask = "research_synthesis"
 
 
 @dataclass(frozen=True)
+class ModelConfig:
+    """Provider-independent runtime configuration for model execution."""
+
+    provider: str
+    endpoint: str | None = None
+    model: str | None = None
+    api_style: str = "openai_compatible"
+    credential_ref: str | None = None
+
+
+@dataclass(frozen=True)
 class ModelRequest:
     prompt: str
 
