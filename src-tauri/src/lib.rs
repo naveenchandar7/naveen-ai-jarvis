@@ -95,7 +95,6 @@ fn stop_voice(audio_state: State<'_, audio::AudioState>) -> Result<(), String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(audio::AudioState::default())
-        .manage(core_supervisor::CoreSupervisor::new())
         .invoke_handler(tauri::generate_handler![
             get_system_info,
             get_core_status,
@@ -107,8 +106,9 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             let handle = app.handle().clone();
-            let supervisor = app.state::<core_supervisor::CoreSupervisor>().inner().clone();
-            supervisor.start(handle.clone());
+            let config = core_supervisor::CoreLaunchConfig::from_app(&handle)
+                .map_err(|_| "Failed to build NAVEEN Core launch configuration")?;
+            app.manage(core_supervisor::CoreSupervisor::start(config, handle.clone()));
 
             let telemetry_handle = handle.clone();
             std::thread::spawn(move || loop {
