@@ -5,7 +5,10 @@ import unittest
 from model import (
     MODEL_TASK_CONVERSATION,
     MODEL_TASK_FAST_RESPONSE,
+    MODEL_TASK_REASONING,
+    HostRoutedModelProvider,
     ModelManager,
+    ModelProviderRegistry,
     ModelRequest,
 )
 
@@ -21,16 +24,104 @@ class RecordingProvider:
         return self.name
 
 
+class ModelProviderRegistryTests(unittest.TestCase):
+    def test_register_and_get_provider(self):
+        provider = RecordingProvider("test-provider")
+        registry = ModelProviderRegistry()
+
+        registry.register(provider)
+
+        self.assertIs(registry.get("test-provider"), provider)
+        self.assertEqual(registry.names(), ("test-provider",))
+
+    def test_duplicate_provider_name_is_rejected(self):
+        registry = ModelProviderRegistry()
+        registry.register(RecordingProvider("same-provider"))
+
+        with self.assertRaises(ValueError):
+            registry.register(RecordingProvider("same-provider"))
+
+    def test_empty_provider_name_is_rejected(self):
+        registry = ModelProviderRegistry()
+
+        with self.assertRaises(ValueError):
+            registry.register(RecordingProvider("   "))
+
+    def test_missing_provider_is_rejected(self):
+        registry = ModelProviderRegistry()
+
+        with self.assertRaises(KeyError):
+            registry.get("missing-provider")
+
+    def test_provider_names_are_sorted(self):
+        registry = ModelProviderRegistry()
+        registry.register(RecordingProvider("z-provider"))
+        registry.register(RecordingProvider("a-provider"))
+
+        self.assertEqual(
+            registry.names(),
+            ("a-provider", "z-provider"),
+        )
+
+
+class HostRoutedModelProviderTests(unittest.TestCase):
+    def test_host_provider_uses_model_complete_capability(self):
+        calls = []
+
+        def capability_requester(capability_id, input_data):
+            calls.append((capability_id, input_data))
+            return {"content": "model response"}
+
+        provider = HostRoutedModelProvider()
+
+        result = provider.complete(
+            ModelRequest(prompt="hello"),
+            capability_requester,
+        )
+
+        self.assertEqual(result, "model response")
+        self.assertEqual(
+            calls,
+            [("model.complete", {"prompt": "hello"})],
+        )
+
+    def test_host_provider_rejects_missing_capability_requester(self):
+        provider = HostRoutedModelProvider()
+
+        with self.assertRaises(RuntimeError):
+            provider.complete(ModelRequest(prompt="hello"))
+
+    def test_host_provider_rejects_empty_model_content(self):
+        def capability_requester(capability_id, input_data):
+            del capability_id, input_data
+            return {"content": "   "}
+
+        provider = HostRoutedModelProvider()
+
+        with self.assertRaises(RuntimeError):
+            provider.complete(
+                ModelRequest(prompt="hello"),
+                capability_requester,
+            )
+
+
 class ModelRoutingTests(unittest.TestCase):
     def test_task_specific_provider_is_selected(self):
         conversation = RecordingProvider("conversation-provider")
         fast = RecordingProvider("fast-provider")
         manager = ModelManager(provider=conversation)
+
         manager.register(MODEL_TASK_FAST_RESPONSE, fast)
 
-        self.assertEqual(manager.complete("hello"), "conversation-provider")
         self.assertEqual(
-            manager.complete("status", task=MODEL_TASK_FAST_RESPONSE),
+            manager.complete("hello"),
+            "conversation-provider",
+        )
+        self.assertEqual(
+            manager.complete(
+                "status",
+                task=MODEL_TASK_FAST_RESPONSE,
+            ),
             "fast-provider",
         )
         self.assertEqual(conversation.calls, ["hello"])
@@ -40,8 +131,35 @@ class ModelRoutingTests(unittest.TestCase):
         conversation = RecordingProvider("conversation-provider")
         manager = ModelManager(provider=conversation)
 
-        self.assertEqual(manager.complete("reason", task="reasoning"), "conversation-provider")
+        self.assertEqual(
+            manager.complete(
+                "reason",
+                task=MODEL_TASK_REASONING,
+            ),
+            "conversation-provider",
+        )
         self.assertEqual(conversation.calls, ["reason"])
+
+    def test_task_registration_adds_provider_to_registry(self):
+        conversation = RecordingProvider("conversation-provider")
+        reasoning = RecordingProvider("reasoning-provider")
+        manager = ModelManager(provider=conversation)
+
+        manager.register(MODEL_TASK_REASONING, reasoning)
+
+        self.assertIs(
+            manager.registry.get("reasoning-provider"),
+            reasoning,
+        )
+
+    def test_initial_provider_is_registered(self):
+        conversation = RecordingProvider("conversation-provider")
+        manager = ModelManager(provider=conversation)
+
+        self.assertIs(
+            manager.registry.get("conversation-provider"),
+            conversation,
+        )
 
 
 if __name__ == "__main__":
